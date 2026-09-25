@@ -1,5 +1,9 @@
 # Plan
 
+Summary plan. The detailed architecture and phase-by-phase work items are in
+[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md), which takes precedence where the two differ
+(for example, the mock server now lives in `llmserve/mock/` rather than `scripts/`).
+
 Rule from the PRD: measure first, invent second. The scheduler comes last.
 
 ## Two decisions to make before writing much code

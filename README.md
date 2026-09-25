@@ -12,7 +12,8 @@ that model-quality work doesn't cover.
 
 ## Status
 
-Phase 1 (serving baseline). See [docs/PLAN.md](docs/PLAN.md).
+Phase 1 (serving baseline). See [docs/PLAN.md](docs/PLAN.md) and the detailed
+[implementation plan](docs/IMPLEMENTATION_PLAN.md).
 
 ## Setup
 
