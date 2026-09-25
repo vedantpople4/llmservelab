@@ -1,0 +1,24 @@
+# E01: 128-token prompts, 128-token outputs, concurrency 1 (PRD §11).
+experiment: e01
+seed: 42
+repetitions: 5
+
+server:
+  endpoint: http://localhost:8000/v1
+  model: Qwen/Qwen2.5-7B-Instruct
+
+scheduler: fifo
+
+workload:
+  type: constant
+  requests: 200
+  concurrency: 1
+  prompt:
+    distribution: fixed
+    tokens: 128
+  output:
+    distribution: fixed
+    tokens: 128
+
+warmup:
+  requests: 20
