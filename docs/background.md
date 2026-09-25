@@ -6,6 +6,8 @@ answer them without notes, and you can predict TTFT and TPOT on the chosen GPU t
 
 ## 1. Reading list
 
+Links, a day-by-day order, and self-checks are in [learning.md](learning.md).
+
 | Paper | Read for | Done |
 |---|---|---|
 | Orca (Yu et al., OSDI '22) | Iteration-level scheduling: why batching per *step* beats batching per *request* | ☐ |
