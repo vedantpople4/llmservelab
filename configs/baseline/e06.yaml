@@ -1,6 +1,6 @@
-# E01: 128-token prompts, 128-token outputs, concurrency 1 (PRD §11).
+# E06: 1024-token prompts, 512-token outputs, concurrency 8 (PRD §11).
 schema_version: 1
-experiment: e01
+experiment: e06
 seed: 42
 repetitions: 5
 
@@ -13,14 +13,14 @@ server:
 
 load:
   mode: closed
-  concurrency: 1
-  requests: 200  # single stream has low variance; 200 is enough
+  concurrency: 8
+  requests: 1000
 
 workload:
   classes:
-    - name: p128_o128
-      prompt: {distribution: fixed, tokens: 128}
-      output: {distribution: fixed, tokens: 128}
+    - name: p1024_o512
+      prompt: {distribution: fixed, tokens: 1024}
+      output: {distribution: fixed, tokens: 512}
 
 measurement:
   warmup: {requests: 20}

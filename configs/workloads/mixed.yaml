@@ -1,0 +1,21 @@
+# Heterogeneous mix of the PRD §10 classes. SLOs are placeholders: set them from Phase 3
+# isolated-latency data (e.g. 5x isolated P50) before any scheduler work, then freeze them.
+classes:
+  - name: interactive
+    weight: 0.60
+    priority: high
+    slo: {ttft_ms: 500, tpot_ms: 100}
+    prompt: {distribution: uniform, min: 128, max: 512}
+    output: {distribution: fixed, tokens: 128}
+  - name: long_context
+    weight: 0.25
+    priority: medium
+    slo: {ttft_ms: 3000, tpot_ms: 100}
+    prompt: {distribution: choice, values: [2048, 4096, 8192], weights: [0.5, 0.3, 0.2]}
+    output: {distribution: fixed, tokens: 128}
+  - name: generation_heavy
+    weight: 0.15
+    priority: low
+    slo: {ttft_ms: 2000, tpot_ms: 150}
+    prompt: {distribution: fixed, tokens: 256}
+    output: {distribution: choice, values: [512, 1024]}

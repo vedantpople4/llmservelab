@@ -1,6 +1,6 @@
-# E01: 128-token prompts, 128-token outputs, concurrency 1 (PRD §11).
+# E07: mixed prompts and outputs, concurrency 32 (PRD §11).
 schema_version: 1
-experiment: e01
+experiment: e07
 seed: 42
 repetitions: 5
 
@@ -13,14 +13,11 @@ server:
 
 load:
   mode: closed
-  concurrency: 1
-  requests: 200  # single stream has low variance; 200 is enough
+  concurrency: 32
+  requests: 2000
 
 workload:
-  classes:
-    - name: p128_o128
-      prompt: {distribution: fixed, tokens: 128}
-      output: {distribution: fixed, tokens: 128}
+  ref: ../workloads/mixed.yaml
 
 measurement:
   warmup: {requests: 20}

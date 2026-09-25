@@ -1,0 +1,29 @@
+# The PRD §9 bursty pattern (5 -> 50 -> 5 req/s) against the in-package mock server,
+# with the gateway on. Used to develop the load driver and schedulers without a GPU.
+schema_version: 1
+experiment: bursty-mock
+seed: 42
+repetitions: 1
+
+server:
+  kind: mock
+  endpoint: http://localhost:8001/v1
+  model: mock
+
+gateway:
+  enabled: true
+  max_in_flight: 16
+  scheduler: {name: fifo}
+
+load:
+  mode: open
+  arrival:
+    process: bursty
+    phases:
+      - {duration_s: 10, rate: 5}
+      - {duration_s: 10, rate: 50}
+      - {duration_s: 10, rate: 5}
+  duration_s: 30
+
+workload:
+  ref: ../workloads/mixed.yaml

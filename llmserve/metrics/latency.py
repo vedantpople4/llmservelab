@@ -1,32 +1,68 @@
+"""Latency metrics derived from a `RequestRecord` (PRD §8).
+
+All functions return seconds, or None when the metric is undefined for that request. Latency
+metrics are defined only for successful requests; failures are counted separately so they are
+never silently mixed into percentiles.
+
+TTFT is measured from *arrival*, so it includes time spent in the gateway queue. This is the
+latency a user sees. `ttft_server` measures from dispatch and isolates the engine's share.
+"""
+
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from llmserve.metrics.records import RequestRecord
+
+_NS = 1e9
 
 
-@dataclass(frozen=True)
-class RequestTiming:
-    """Wall-clock timestamps (seconds) for one streamed request."""
+def _span(start: int | None, end: int | None) -> float | None:
+    if start is None or end is None:
+        return None
+    return (end - start) / _NS
 
-    start: float
-    token_times: Sequence[float]
 
-    @property
-    def ttft(self) -> float:
-        return self.token_times[0] - self.start
+def queue_wait(r: RequestRecord) -> float | None:
+    """Time from arrival to dispatch. Defined for failed requests too, if they were dispatched."""
+    return _span(r.t_arrival, r.t_dispatch)
 
-    @property
-    def e2e(self) -> float:
-        return self.token_times[-1] - self.start
 
-    @property
-    def tpot(self) -> float | None:
-        n = len(self.token_times)
-        if n < 2:
-            return None
-        return (self.e2e - self.ttft) / (n - 1)
+def ttft(r: RequestRecord) -> float | None:
+    return _span(r.t_arrival, r.t_first_token) if r.ok else None
 
-    @property
-    def inter_token_latencies(self) -> list[float]:
-        t = self.token_times
-        return [b - a for a, b in zip(t, t[1:], strict=False)]
+
+def ttft_server(r: RequestRecord) -> float | None:
+    return _span(r.t_dispatch, r.t_first_token) if r.ok else None
+
+
+def e2e(r: RequestRecord) -> float | None:
+    return _span(r.t_arrival, r.t_last_token) if r.ok else None
+
+
+def tpot(r: RequestRecord) -> float | None:
+    """(last token − first token) / (output_tokens − 1), using the server's token count.
+
+    Chunk count is not token count: engines may stream several tokens per chunk.
+    """
+    n = r.output_tokens_usage
+    if not r.ok or n is None or n < 2:
+        return None
+    decode = _span(r.t_first_token, r.t_last_token)
+    return None if decode is None else decode / (n - 1)
+
+
+def inter_token_latencies(r: RequestRecord) -> list[float]:
+    """Per-token gaps after the first token.
+
+    A chunk carrying k tokens that arrives Δt after the previous chunk counts as k gaps of Δt/k.
+    Extra tokens in the *first* chunk have no observable gap and are skipped. With one token per
+    chunk, the gaps sum to `t_last_token − t_first_token`, which matches TPOT.
+    """
+    if not r.ok:
+        return []
+    gaps: list[float] = []
+    for prev, cur in zip(r.chunks, r.chunks[1:], strict=False):
+        if cur.n_tokens <= 0:
+            continue
+        gap = (cur.t_ns - prev.t_ns) / _NS / cur.n_tokens
+        gaps.extend([gap] * cur.n_tokens)
+    return gaps

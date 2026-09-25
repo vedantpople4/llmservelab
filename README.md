@@ -12,7 +12,7 @@ that model-quality work doesn't cover.
 
 ## Status
 
-Phase 1 (serving baseline). See [docs/PLAN.md](docs/PLAN.md) and the detailed
+Phase 0 (foundations): data model, config schema, ADRs and CI are in place. See [docs/PLAN.md](docs/PLAN.md) and the detailed
 [implementation plan](docs/IMPLEMENTATION_PLAN.md).
 
 ## Setup
@@ -20,12 +20,14 @@ Phase 1 (serving baseline). See [docs/PLAN.md](docs/PLAN.md) and the detailed
 ```bash
 uv sync --extra dev
 uv run pytest
+uv run llmserve validate configs/baseline/*.yaml
 ```
 
 ## Layout
 
 | Path | Contents |
 |---|---|
+| `llmserve/config` | Experiment config schema (pydantic), loader, config hash |
 | `llmserve/workload` | Prompt/output length control, arrival processes, trace replay |
 | `llmserve/scheduler` | `Scheduler` interface plus FIFO, SJF, priority, WAAS |
 | `llmserve/metrics` | TTFT/TPOT/ITL, GPU (NVML), server (vLLM `/metrics`) |
@@ -33,3 +35,4 @@ uv run pytest
 | `llmserve/analysis` | Aggregation, statistics, plots |
 | `configs/` | Committed experiment configs; every figure maps to one |
 | `results/` | Raw run output (git-ignored) |
+| `docs/adr/` | Architecture decision records |

@@ -1,6 +1,6 @@
-# E01: 128-token prompts, 128-token outputs, concurrency 1 (PRD §11).
+# E03: 128-token prompts, 128-token outputs, concurrency 32 (PRD §11).
 schema_version: 1
-experiment: e01
+experiment: e03
 seed: 42
 repetitions: 5
 
@@ -13,8 +13,8 @@ server:
 
 load:
   mode: closed
-  concurrency: 1
-  requests: 200  # single stream has low variance; 200 is enough
+  concurrency: 32
+  requests: 1000
 
 workload:
   classes:

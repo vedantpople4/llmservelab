@@ -1,0 +1,27 @@
+# Local development on a Mac (ADR-009): E01's shape, scaled down, against mlx_lm.server.
+#   uv pip install mlx-lm
+#   mlx_lm.server --model mlx-community/Qwen2.5-0.5B-Instruct-4bit --port 8080
+# Results are for checking the harness only and never appear in reports.
+schema_version: 1
+experiment: e01-mlx
+seed: 42
+repetitions: 1
+
+server:
+  kind: mlx
+  endpoint: http://localhost:8080/v1
+  model: mlx-community/Qwen2.5-0.5B-Instruct-4bit
+
+load:
+  mode: closed
+  concurrency: 1
+  requests: 20
+
+workload:
+  classes:
+    - name: p128_o128
+      prompt: {distribution: fixed, tokens: 128}
+      output: {distribution: fixed, tokens: 128}
+
+measurement:
+  warmup: {requests: 2}

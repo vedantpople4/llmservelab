@@ -94,6 +94,13 @@ Confidence intervals come from variation across repetitions. See §5.
 **ADR-008: Configs are validated by pydantic models.** One schema serves `llmserve validate`, the
 runner, and the analysis code, and it is tested. Add `pydantic>=2` as a dependency.
 
+**ADR-009: Local backends on a Mac for development.** `server.kind` accepts `mock`, `mlx`,
+`llamacpp` and `vllm`. Each backend declares its capabilities (token-ID prompts, forced output
+length, continuous batching, `/metrics`, prefix-cache control), and the harness adapts. Phases 1–2
+can be completed mostly on a Mac. Only `kind: vllm` results may appear in reports.
+
+The full ADRs are in [docs/adr/](adr/README.md).
+
 ### 3. Target module layout
 
 This extends PRD §24. Changes from PLAN.md: the mock server moves into the package so tests can
@@ -101,7 +108,7 @@ import it, and new `config/`, `client/`, `gateway/` and `mock/` packages are add
 
 ```
 llmserve/
-  config/     schema.py (pydantic models) · loader.py (YAML → model, defaults, hash)
+  config/     schema.py (pydantic models) · loader.py (YAML → model, `ref` resolution, hash)
   workload/   spec.py (RequestSpec, Workload) · distributions.py · arrivals.py · prompts.py
               classes.py (workload classes → specs) · generator.py (materialize) · replay.py (traces)
   client/     sse.py (streaming parser) · openai_stream.py (one request → RequestRecord)
@@ -267,6 +274,10 @@ and **risks**. Estimates assume part-time work and match PLAN.md.
 
 ### Phase 0: Fundamentals and foundations (1 week)
 
+*Status:* work items 2–5 are done (data model, config schema, ADRs, CI). Work item 1 is yours:
+the reading and `docs/background.md` §1–3. The quantitative model (§4) and
+`scripts/envelope.py` are already in place.
+
 **Goal:** understand the system well enough to predict results, and fix the scaffold's data model
 before anything builds on it.
 
@@ -278,7 +289,7 @@ Work items:
    - continuous batching, and chunked prefill
    - where head-of-line blocking can still happen in vLLM
    - the back-of-envelope model from §6, with predicted TTFT/TPOT ranges for the chosen GPU
-2. Write ADR-001…008 (§2) in `docs/adr/`.
+2. Write ADR-001…009 (§2) in `docs/adr/`.
 3. Replace the scaffold data model:
    - `metrics/records.py`: the `RequestRecord` dataclass plus a Parquet schema (a pyarrow schema
      constant).
@@ -699,7 +710,7 @@ seed: 42
 repetitions: 5
 
 server:
-  kind: vllm                      # vllm | mock
+  kind: vllm                      # vllm | mlx | llamacpp | mock  (ADR-009)
   endpoint: http://localhost:8000/v1
   model: Qwen/Qwen2.5-7B-Instruct
   model_revision: <commit-sha>    # asserted by env_check
@@ -720,13 +731,14 @@ load:
   concurrency: 32                 # closed only
   # arrival:                      # open only
   #   process: poisson            # constant | poisson | bursty | replay
-  #   rho: 0.85                   # or `rate:` in req/s; rho needs capacity.<workload> below
+  #   rho: 0.85                   # or `rate:` in req/s; rho needs capacity_rps
   #   phases: [{duration_s: 10, rate: 5}, {duration_s: 10, rate: 50}, {duration_s: 10, rate: 5}]
   #   trace: data/traces/azure_conv.csv
   requests: 2000
+  # capacity_rps: 11.2            # measured in Phase 3; required when arrival uses rho
 
 workload:
-  ref: configs/workloads/mixed.yaml   # or inline `classes:`
+  ref: ../workloads/mixed.yaml    # relative to this file; or inline `classes:`
 
 measurement:
   warmup: {requests: 20, settle_timeout_s: 60}
@@ -735,10 +747,9 @@ measurement:
   cooldown_s: 30
   request_timeout_s: 600
   samplers: {gpu_hz: 10, server_hz: 2, dcgm: auto}
-
-capacity:                         # filled in from Phase 3; needed for rho
-  mixed: null
 ```
+
+The implemented schema is `llmserve/config/schema.py`, which is authoritative.
 
 `configs/workloads/mixed.yaml`:
 ```yaml
