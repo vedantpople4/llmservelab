@@ -311,6 +311,13 @@ predict (within 2×) TTFT for a 1K prompt and TPOT at batch 1 on the chosen GPU.
 
 ### Phase 1: Serving baseline (1 week)
 
+*Status:* work items 2–6 are built and verified against the in-package mock: `scripts/smoke.py`
+runs 100 sequential requests with 0 failures and 0 usage mismatches (`tasks/plan.md`). Two things
+were pulled forward from Phase 2 to make that possible without a GPU — a minimal mock streaming
+server (delay model only; the continuous-batching engine is still Phase 2) and
+`workload/distributions.py`. Work item 1 (`docker/compose.yml`) is authored but has never been
+executed; the vLLM run that closes the exit check for real still needs a rented GPU.
+
 **Goal:** one model serving reliably, and a streaming client whose timestamps can be trusted.
 
 Work items:

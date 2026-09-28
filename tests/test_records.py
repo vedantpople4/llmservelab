@@ -40,6 +40,7 @@ def test_rows_conform_to_parquet_schemas() -> None:
     table = pa.Table.from_pylist(rows, schema=REQUEST_SCHEMA)
     assert table.column("status").to_pylist() == ["ok", "http_error"]
     assert table.column("t_first_token").to_pylist() == [10, None]
+    assert table.column("n_chunks").to_pylist() == [2, 0]
 
     chunks = pa.Table.from_pylist(ok.chunk_rows(), schema=CHUNK_SCHEMA)
     assert chunks.column("idx").to_pylist() == [0, 1]

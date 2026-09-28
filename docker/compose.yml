@@ -1,0 +1,71 @@
+# Phase 1 serving baseline: one 7B model behind pinned vLLM on a rented GPU (ADR-001, §6).
+#
+#   export HF_TOKEN=hf_...
+#   docker compose -f docker/compose.yml up -d --wait
+#   curl -s localhost:8000/health && curl -s localhost:8000/version
+#
+# Needs a CUDA host with the NVIDIA Container Toolkit. This file is authored on a Mac and has not
+# been executed: run `docker compose -f docker/compose.yml config` on the GPU host first.
+#
+# Pin the image by digest before any measured run:
+#   docker compose -f docker/compose.yml config | grep image
+#   docker pull vllm/vllm-openai:v0.10.2
+#   docker inspect --format='{{index .RepoDigests 0}}' vllm/vllm-openai:v0.10.2
+# and record the digest in the run's metadata.
+
+services:
+  vllm:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.10.2}
+    ports:
+      - "8000:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN:?set HF_TOKEN to a Hugging Face token with access to the model}
+    volumes:
+      - model-cache:/root/.cache/huggingface
+    command:
+      - --model=Qwen/Qwen2.5-7B-Instruct
+      - --host=0.0.0.0
+      - --port=8000
+      # §6 server settings. Recorded in every run's metadata; held constant unless the setting is
+      # the variable under test.
+      - --max-model-len=10240
+      - --gpu-memory-utilization=0.90
+      - --max-num-seqs=256
+      - --disable-log-requests
+      # ADR-005: prefix caching must be off, and env_check probes for it.
+      - --no-enable-prefix-caching
+      # --scheduling-policy fcfs is the default; Phase 5 cross-checks with `priority`.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 180s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # Optional: DCGM metrics for Phase 4 (`metrics/dcgm: on`). Uncomment on the GPU host.
+  # dcgm-exporter:
+  #   image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.5-3.4.1-ubuntu22.04
+  #   ports: ["9400:9400"]
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+
+volumes:
+  model-cache:

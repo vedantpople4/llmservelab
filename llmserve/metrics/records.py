@@ -78,11 +78,17 @@ class RequestRecord:
 
     def to_row(self) -> dict[str, Any]:
         """Flat row for `REQUEST_SCHEMA`. Chunks go to their own table; see `chunk_rows`."""
-        return {
-            name: (getattr(self, name).value if name == "status" else getattr(self, name))
-            for name in REQUEST_SCHEMA.names
-            if name not in ("run_id", "rep")
-        }
+        row: dict[str, Any] = {}
+        for name in REQUEST_SCHEMA.names:
+            if name in ("run_id", "rep"):
+                continue
+            if name == "status":
+                row[name] = self.status.value
+            elif name == "n_chunks":
+                row[name] = len(self.chunks)
+            else:
+                row[name] = getattr(self, name)
+        return row
 
     def chunk_rows(self) -> list[dict[str, Any]]:
         return [
@@ -109,6 +115,7 @@ REQUEST_SCHEMA = pa.schema(
         ("t_first_token", pa.int64()),
         ("t_last_token", pa.int64()),
         ("t_complete", pa.int64()),
+        ("n_chunks", pa.int32()),
         ("prompt_tokens_usage", pa.int32()),
         ("output_tokens_usage", pa.int32()),
         ("http_status", pa.int32()),

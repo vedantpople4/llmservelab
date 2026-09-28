@@ -1,0 +1,29 @@
+# Phase 1 exit check against the in-package mock server: 100 sequential requests, no GPU.
+# Start the backend first:  uv run python -m llmserve.mock --port 8001
+# Then run:                uv run python scripts/smoke.py configs/dev/smoke_mock.yaml
+schema_version: 1
+experiment: smoke-mock
+description: Phase 1 exit check on the mock backend (100 sequential requests).
+seed: 42
+repetitions: 1
+
+server:
+  kind: mock
+  endpoint: http://localhost:8001/v1
+  model: mock
+  prefix_caching: false
+
+load:
+  mode: closed
+  concurrency: 1
+  requests: 100
+
+workload:
+  classes:
+    - name: p128_o16
+      prompt: {distribution: fixed, tokens: 128}
+      output: {distribution: fixed, tokens: 16}
+
+measurement:
+  warmup: {requests: 0}
+  request_timeout_s: 60
