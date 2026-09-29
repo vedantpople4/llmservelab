@@ -93,3 +93,69 @@ def test_in_flight_counter_tracks_concurrent_streams() -> None:
 
     asyncio.run(run())
     assert engine.in_flight == 0
+
+
+def test_missing_prompt_is_rejected() -> None:
+    async def run() -> None:
+        async with client() as c:
+            r = await c.post("/v1/completions", json={"max_tokens": 4})
+        assert r.status_code == 422
+
+    asyncio.run(run())
+
+
+def test_text_prompt_is_accepted_with_an_estimated_length() -> None:
+    async def run() -> None:
+        async with client() as c:
+            r = await c.post("/v1/completions", json={"prompt": "hello world", "max_tokens": 2})
+        assert r.status_code == 200
+        assert r.json()["usage"]["prompt_tokens"] == len("hello world") // 4
+
+    asyncio.run(run())
+
+
+def test_default_max_tokens_is_16() -> None:
+    async def run() -> None:
+        async with client() as c:
+            r = await c.post(
+                "/v1/completions",
+                json={"prompt": [1, 2], "stream": True, "stream_options": {"include_usage": True}},
+            )
+        parser = SseParser()
+        events = parser.feed(r.content)
+        chunks = [
+            json.loads(e.data)
+            for e in events
+            if e.data != "[DONE]" and json.loads(e.data)["choices"]
+        ]
+        assert len(chunks) == 16
+
+    asyncio.run(run())
+
+
+def test_stream_without_include_usage_omits_the_usage_chunk() -> None:
+    async def run() -> None:
+        async with client() as c:
+            r = await c.post(
+                "/v1/completions",
+                json={"prompt": [1], "max_tokens": 3, "stream": True},
+            )
+        parser = SseParser()
+        events = parser.feed(r.content)
+        payloads = [json.loads(e.data) for e in events if e.data != "[DONE]"]
+        assert all(p["choices"] for p in payloads)
+        assert events[-1].data == "[DONE]"
+
+    asyncio.run(run())
+
+
+def test_unknown_request_fields_are_ignored() -> None:
+    async def run() -> None:
+        async with client() as c:
+            r = await c.post(
+                "/v1/completions",
+                json={"prompt": [1], "max_tokens": 2, "temperature": 0.7, "top_p": 0.9, "n": 1},
+            )
+        assert r.status_code == 200
+
+    asyncio.run(run())

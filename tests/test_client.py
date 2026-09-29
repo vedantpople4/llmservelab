@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -245,3 +246,72 @@ def test_end_to_end_chunk_count_matches_output_length(n: int) -> None:
         assert len(rec.chunks) == n
 
     asyncio.run(run())
+
+
+def test_payload_is_the_adr005_contract() -> None:
+    """Pin what the client actually sends: token IDs, forced length, usage requested."""
+
+    body = sse(
+        *text_chunks(" a", " b", " c", finish="length"),
+        {"choices": [], "usage": {"prompt_tokens": 4, "completion_tokens": 3}},
+    )
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["json"] = json.loads(request.content)
+        return httpx.Response(200, content=body)
+
+    async def run() -> None:
+        clock = RunClock()
+        async with transport(httpx.MockTransport(handler)) as c:
+            rec = await stream_completion(
+                c, spec(), clock, endpoint="http://x/v1", model="m", t_arrival=clock(), caps=CAPS
+            )
+        assert rec.status is RequestStatus.OK, rec.error
+
+    asyncio.run(run())
+
+    payload = seen["json"]
+    assert seen["path"] == "/v1/completions"
+    assert payload["prompt"] == [1, 2, 3, 4]
+    assert payload["max_tokens"] == 3
+    assert payload["min_tokens"] == 3
+    assert payload["ignore_eos"] is True
+    assert payload["stream"] is True
+    assert payload["stream_options"] == {"include_usage": True}
+    assert payload["model"] == "m"
+
+
+def test_payload_for_a_backend_without_token_ids() -> None:
+    """ADR-009 fallback: text prompt, no forced-length flags, usage still requested."""
+
+    loose = replace(CAPS, token_id_prompts=False, forced_output_length=False)
+    body = sse({"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 3}})
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["json"] = json.loads(request.content)
+        return httpx.Response(200, content=body)
+
+    async def run() -> None:
+        clock = RunClock()
+        async with transport(httpx.MockTransport(handler)) as c:
+            rec = await stream_completion(
+                c,
+                spec(prompt_text="hello world"),
+                clock,
+                endpoint="http://x/v1",
+                model="m",
+                t_arrival=clock(),
+                caps=loose,
+            )
+        assert rec.status is RequestStatus.OK, rec.error
+
+    asyncio.run(run())
+
+    payload = seen["json"]
+    assert payload["prompt"] == "hello world"
+    assert "min_tokens" not in payload
+    assert "ignore_eos" not in payload
+    assert payload["stream_options"] == {"include_usage": True}
