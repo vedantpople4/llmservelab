@@ -27,7 +27,9 @@ System Design section, because a reviewer will ask about it.
 
 ### 2. Where do experiments run?
 
-A Mac has no CUDA, so vLLM benchmarks need a rented GPU (L4 or A10 is cheapest for a 7B model).
+A Mac has no CUDA, so vLLM benchmarks need a GPU. The plan is Kaggle's free notebooks — one
+Tesla T4 with `Qwen2.5-7B-Instruct-AWQ`, 30 GPU-hours per rolling week (ADR-0011,
+`docs/runbooks/kaggle.md`). A rented 24 GB card stays the fallback if the quota runs out.
 To keep GPU hours low:
 
 - Build a **mock OpenAI-compatible streaming server** (`scripts/mock_server.py`) whose TTFT grows
@@ -78,5 +80,5 @@ MVP = end of Phase 4 (PRD §42). Version 1.0 = end of Phase 8.
 - **Prefix caching:** identical synthetic prompts get cached and make TTFT look better than it is.
   Randomize prompt content per request, or disable prefix caching explicitly and record that choice.
 - **Clock:** use `time.perf_counter()` for durations and wall-clock time only for metadata.
-- **Pin versions:** vLLM image tag, model revision hash, CUDA/driver versions. Store all of them in
-  every run's metadata.
+- **Pin versions:** vLLM image tag or pip version, model revision hash, CUDA/driver versions.
+  Store all of them in every run's metadata.

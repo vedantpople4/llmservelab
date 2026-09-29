@@ -17,6 +17,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 
+from llmserve.client.auth import AuthEnvError, auth_headers
 from llmserve.client.capabilities import capabilities
 from llmserve.client.openai_stream import stream_completion
 from llmserve.config.loader import config_hash, load_config
@@ -71,6 +72,11 @@ async def smoke(
 ) -> int:
     caps = capabilities(cfg.server.kind)
     target = endpoint or cfg.server.endpoint
+    try:
+        headers = auth_headers(cfg.server)
+    except AuthEnvError as e:
+        print(f"env check FAILED: {e}", file=sys.stderr)
+        return 2
 
     if not skip_env_check:
         try:
@@ -89,7 +95,7 @@ async def smoke(
     def token_counter(text: str) -> int:
         return len(builder.tokenizer.encode(text))
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers=headers) as client:
         for i, spec in enumerate(specs, 1):
             t_arrival = clock()
             records.append(

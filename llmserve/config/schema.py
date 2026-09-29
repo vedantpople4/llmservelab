@@ -193,15 +193,18 @@ class Load(_Model):
 
 
 class Server(_Model):
-    # mock: in-package simulator. mlx / llamacpp: local development on a Mac (ADR-009).
-    # vllm: the only backend whose results may appear in the paper.
-    kind: Literal["mock", "mlx", "llamacpp", "vllm"]
+    # mock: in-package simulator. mlx / llamacpp / ollama / lmstudio / nim: development surfaces
+    # (ADR-009, ADR-0010). vllm: the only backend whose results may appear in the paper.
+    # `kind` must stay in sync with llmserve.client.capabilities.SERVER_KINDS.
+    kind: Literal["mock", "mlx", "llamacpp", "ollama", "lmstudio", "nim", "vllm"]
     endpoint: Annotated[str, Field(pattern=r"^https?://")]
     model: str
     model_revision: str | None = None
     expected_version: str | None = None
     prefix_caching: bool = False
     scheduling_policy: Literal["fcfs", "priority"] = "fcfs"
+    api_key_env: Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")] | None = None
+    """Environment variable holding the bearer token (NIM's `NVIDIA_API_KEY`); None = no auth."""
 
     @model_validator(mode="after")
     def _policy_needs_vllm(self) -> Self:

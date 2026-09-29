@@ -11,3 +11,5 @@
 | [0007](0007-run-is-the-unit-of-replication.md) | The run, not the request, is the unit of replication |
 | [0008](0008-pydantic-config-schema.md) | Experiment configs are validated with pydantic |
 | [0009](0009-local-development-backends.md) | Local backends on a Mac for development |
+| [0010](0010-ollama-lmstudio-nim-dev-surfaces.md) | Ollama, LM Studio and NIM are development surfaces |
+| [0011](0011-free-kaggle-t4-measurement-hardware.md) | Free Kaggle T4 is the measurement hardware |

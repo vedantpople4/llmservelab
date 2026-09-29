@@ -49,16 +49,20 @@ For each paper, write 5–10 lines: the problem, the key mechanism, the headline
 
 ## 4. Back-of-envelope model for Qwen2.5-7B
 
-Run `uv run python scripts/envelope.py --preset <gpu>` for the numbers. The script uses the
-formulas below.
+Run `uv run python scripts/envelope.py --preset t4` for the study's SKU (ADR-0011); other
+presets compare against hypothetical cards. The script uses the formulas below.
 
 **Model:** 7.62B parameters, 28 layers, hidden size 3584, 4 KV heads (GQA) × 128 head dim.
-Weights in bf16 are about 15.2 GB; the 4-bit MLX build is about 4.3 GB.
+Weights in bf16 are about 15.2 GB; the study's pinned build is `Qwen2.5-7B-Instruct-AWQ`
+(~5.6 GB, fp16 activations on Turing — no bf16 silicon), and the 4-bit MLX build is about
+4.3 GB.
 
 **KV cache per token:** 2 (K and V) × 28 layers × 4 KV heads × 128 × 2 bytes = **57,344 B ≈ 56
-KiB**. A 24 GB card at `gpu_memory_utilization = 0.9` leaves about 5 GB for KV, roughly 85k
-tokens. That is about ten 8K-token requests at once, so KV pressure (H6) is reachable on a 24 GB
-card.
+KiB**. One Tesla T4 (16 GB) at `gpu_memory_utilization = 0.9` gives 14.4 GB; minus ~5.6 GB of
+weights and ~1.5 GB of overhead, about 7.3 GB remains ≈ 127k tokens — roughly fifteen 8K-token
+requests at once, so KV pressure (H6) is reachable on the study's single T4. (A 24 GB bf16 card
+would leave about 5 GB ≈ 85k tokens; larger cards hide the effect, which is why §6 never
+wanted one.)
 
 **Prefill (TTFT at batch 1)** is compute-bound:
 
@@ -78,15 +82,15 @@ At small batch the weight read dominates, so TPOT barely changes from batch 1 to
 throughput grows about 8×. That is why batching works. As batch and context grow, KV reads and then
 compute take over, and TPOT rises. This is the saturation knee in H1.
 
-**Example (L4, approximate datasheet values: 121 TFLOPS bf16, 300 GB/s; 50% MFU, 80% bandwidth
-efficiency):**
+**Example (study SKU — Tesla T4 + Qwen2.5-7B-AWQ, approximate datasheet values: 65 TFLOPS fp16,
+320 GB/s; 50% MFU, 80% bandwidth efficiency; `envelope.py --preset t4`):**
 
 | | Estimate |
 |---|---|
-| TTFT, 1K prompt | ≈ 260 ms |
-| TTFT, 8K prompt | ≈ 2.3 s |
-| TPOT, batch 1 | ≈ 64 ms (≈ 16 tok/s) |
-| TPOT, batch 32 | ≈ 71 ms (≈ 450 tok/s total) |
+| TTFT, 1K prompt | ≈ 490 ms |
+| TTFT, 8K prompt | ≈ 4.3 s |
+| TPOT, batch 1 | ≈ 22 ms (≈ 45 tok/s) |
+| TPOT, batch 32 | ≈ 29 ms (≈ 1,100 tok/s total) |
 
 Real numbers will differ: MFU for short prompts is lower than 50%, CUDA graphs and kernel launch
 overheads add fixed costs, and the chunked-prefill budget changes how prefill and decode share a

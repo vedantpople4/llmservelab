@@ -99,6 +99,15 @@ runner, and the analysis code, and it is tested. Add `pydantic>=2` as a dependen
 length, continuous batching, `/metrics`, prefix-cache control), and the harness adapts. Phases 1–2
 can be completed mostly on a Mac. Only `kind: vllm` results may appear in reports.
 
+**ADR-0010: Ollama, LM Studio and NIM are development surfaces.** `server.kind` gains `ollama`,
+`lmstudio` and `nim`; capabilities gain `health_endpoint` (reachability-only when there is no
+`/health`) and `prefix_cache_control` (a suspected cache is a note, not a failure, when the
+backend cannot disable it), plus `server.api_key_env` for bearer tokens. Never reportable.
+
+**ADR-0011: Free Kaggle T4 is the measurement hardware.** One Tesla T4 per run, serving
+`Qwen2.5-7B-Instruct-AWQ` in a Kaggle T4 ×2 session (30 free GPU-hours/week, no Docker, no bf16
+silicon). §6 is sized for this SKU; `docs/runbooks/kaggle.md` is the operating procedure.
+
 The full ADRs are in [docs/adr/](adr/README.md).
 
 ### 3. Target module layout
@@ -220,31 +229,38 @@ These rules are fixed before any data exists, so results can't be cherry-picked.
 
 ### 6. Hardware and model sizing
 
-- **Model:** `Qwen/Qwen2.5-7B-Instruct` in bf16, pinned by revision SHA. Weights take about 15 GB.
-- **KV cost per token:** 2 (K, V) × 28 layers × 4 KV heads × 128 head dim × 2 bytes ≈ **56 KiB**.
-- **GPU (one SKU for the whole study):** a 24 GB card (L4 or A10-class). With
-  `gpu_memory_utilization = 0.90`, about 21.6 GB is usable. Minus weights and activations, that
-  leaves roughly 5–6 GB of KV, or about 100k tokens: about 12 concurrent 8K-token requests, or about
-  400 concurrent 256-token requests. KV pressure (H6) is then reachable at realistic mixes. A 48 GB
-  or 80 GB card would hide it unless load is pushed very high.
-- **Back-of-envelope model** (goes in `docs/background.md`, and is compared with measurements in
-  Phase 3):
-  - Prefill is roughly compute-bound: FLOPs ≈ 2 × 7.6e9 × prompt tokens. For 1K tokens that is
-    about 15.6 TFLOP, so tens to a few hundred ms depending on the card and MFU.
-  - Decode at small batch is memory-bound: time per step ≈ bytes read (weights + KV) ÷ memory
-    bandwidth. On a ~300 GB/s card that is about 50 ms per token at batch 1. On a ~600 GB/s card it
-    is about 25 ms.
+*Re-pinned for the free Kaggle route (ADR-0011): one Tesla T4 per run, `Qwen2.5-7B-Instruct-AWQ`.*
 
-  Fill these in with the chosen card's datasheet numbers.
+- **Model:** `Qwen/Qwen2.5-7B-Instruct-AWQ` (INT4 weights ≈ 5.6 GB, fp16 activations), pinned
+  by revision SHA. The card is Turing, which has no bf16 silicon, so fp16 is the activation dtype;
+  the model stays 7B, quantized — the production shape this class of card actually serves.
+- **KV cost per token:** quantization does not touch the KV cache: 2 (K, V) × 28 layers ×
+  4 KV heads × 128 head dim × 2 bytes ≈ **56 KiB**.
+- **GPU (one SKU for the whole study):** one Tesla T4 16 GB — the first GPU of a Kaggle T4 ×2
+  session (`CUDA_VISIBLE_DEVICES=0`; the second T4 stays idle so runs are single-GPU, and
+  Kaggle's P100 is excluded outright: sm_60, unsupported by vLLM). With
+  `gpu_memory_utilization = 0.90`, about 14.4 GB is usable. Minus ~5.6 GB of weights and ~1 GB
+  of activations/workspace, that leaves roughly 7.5–8 GB of KV, or about 130–140k tokens: about
+  16 concurrent 8K-token requests, or about 500 concurrent 256-token requests. KV pressure (H6)
+  is then reachable at realistic mixes — a larger card would hide it, which is part of why this
+  SKU is acceptable.
+- **Back-of-envelope model** (goes in `docs/background.md`, and is compared with measurements in
+  Phase 3; T4 datasheet numbers, to be checked against Phase 1 measurements):
+  - Prefill is roughly compute-bound: FLOPs ≈ 2 × 7.6e9 × prompt tokens. For 1K tokens that is
+    about 15.6 TFLOP; at ~65 TFLOPS fp16 and ~0.3 MFU, ≈ 0.8 s.
+  - Decode at small batch is memory-bound: time per step ≈ bytes read (weights + KV) ÷ memory
+    bandwidth. T4 has 320 GB/s and INT4 weights are ~5.6 GB, so ≈ 20 ms per token at batch 1
+    (plus KV reads); the old 15 GB-weight estimate would have said ~50 ms.
 - **Server settings** (recorded, and held constant unless they are the variable under test):
   - `--max-model-len 10240` (8K prompt + 1K output + margin)
   - `--gpu-memory-utilization 0.90`
+  - `--dtype auto` (resolves to fp16 on Turing; recorded either way)
   - `--no-enable-prefix-caching`
   - `--max-num-seqs 256`
   - `--max-num-batched-tokens`: vLLM's default, recorded. This is the chunked-prefill budget and a
     key variable for H4, because it sets how much a long prefill can delay decodes.
   - `--disable-log-requests`
-  - the image is pinned by digest
+  - pin the vLLM version: by image digest on a GPU host, by pip version in the Kaggle notebook
 
 **GPU budget (rough; recompute after Phase 1 measures real per-request cost):**
 
@@ -263,7 +279,9 @@ E01 (single stream, 128 output tokens) is the slowest per request. If per-reques
 large, cut E01 to 100 requests. Its variance is low, so fewer requests are enough.
 
 Everything except the final numbers can be developed and tested on the mock server (§ Phase 2),
-which keeps paid GPU time focused on measurement.
+which keeps the Kaggle quota focused on measurement. Kaggle grants 30 GPU-hours per rolling week
+(ADR-0011), so the ≈ 90–130 GPU-hour plan spans roughly 4–5 quota weeks; sessions cap at 9–12 h,
+and a phase that slips past its session resumes in a fresh notebook.
 
 ---
 
@@ -289,7 +307,7 @@ Work items:
    - continuous batching, and chunked prefill
    - where head-of-line blocking can still happen in vLLM
    - the back-of-envelope model from §6, with predicted TTFT/TPOT ranges for the chosen GPU
-2. Write ADR-001…009 (§2) in `docs/adr/`.
+2. Write ADR-001…009 (§2) in `docs/adr/` (ADR-0010–0011 followed during Phase 1).
 3. Replace the scaffold data model:
    - `metrics/records.py`: the `RequestRecord` dataclass plus a Parquet schema (a pyarrow schema
      constant).
@@ -316,7 +334,9 @@ runs 100 sequential requests with 0 failures and 0 usage mismatches (`tasks/plan
 were pulled forward from Phase 2 to make that possible without a GPU — a minimal mock streaming
 server (delay model only; the continuous-batching engine is still Phase 2) and
 `workload/distributions.py`. Work item 1 (`docker/compose.yml`) is authored but has never been
-executed; the vLLM run that closes the exit check for real still needs a rented GPU.
+executed; the vLLM run that closes the exit check for real needs the Kaggle T4 session
+(ADR-0011) — pip-installed vLLM in a notebook, per `docs/runbooks/kaggle.md`, since Kaggle has
+no Docker.
 
 **Goal:** one model serving reliably, and a streaming client whose timestamps can be trusted.
 
@@ -352,7 +372,8 @@ exact length, deterministic output under a seed, and different prompts for diffe
 
 Exit check (PRD §28): 100 sequential requests, 0 unexplained failures, and 0 usage mismatches.
 Measured TTFT/TPOT fall inside the Phase 0 predicted range, or the gap is explained in
-`docs/background.md`.
+`docs/background.md`. The real-GPU leg of the check runs in a Kaggle notebook
+(`docs/runbooks/kaggle.md`): pip-installed vLLM, `Qwen2.5-7B-Instruct-AWQ`, one T4.
 
 Risks:
 - *vLLM rejects `min_tokens` or token-ID prompts in the pinned version.* Check on day 1. The
@@ -630,6 +651,8 @@ Work items:
    on CPU in about 10 minutes. It lets reviewers without a GPU verify the pipeline, with numbers
    clearly marked as non-representative.
 2. `docker compose up` brings up vLLM, dcgm-exporter and the harness image, as PRD §5 describes.
+   Where there is no Docker (Kaggle), `docs/runbooks/kaggle.md` serves the same pinned vLLM with
+   the §6 flags — the two routes must stay interchangeable (ADR-0011).
 3. Paper (8–12 pages; PRD §35 structure). System Design explains ADR-001/002/003. Methodology
    explains §5 and §6. Limitations covers one GPU SKU, one model, synthetic plus one trace, the
    output-length estimator, and the fact that only admission order is controlled, not batch
@@ -717,9 +740,9 @@ seed: 42
 repetitions: 5
 
 server:
-  kind: vllm                      # vllm | mlx | llamacpp | mock  (ADR-009)
+  kind: vllm      # vllm | mock | mlx | llamacpp | ollama | lmstudio | nim  (ADR-009/0010)
   endpoint: http://localhost:8000/v1
-  model: Qwen/Qwen2.5-7B-Instruct
+  model: Qwen/Qwen2.5-7B-Instruct-AWQ   # §6 re-pin (ADR-0011)
   model_revision: <commit-sha>    # asserted by env_check
   expected_vllm_version: "<pinned>"
   prefix_caching: false           # asserted by env_check

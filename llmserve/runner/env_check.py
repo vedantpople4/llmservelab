@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 
 import httpx
 
+from llmserve.client.auth import AuthEnvError, auth_headers
 from llmserve.client.capabilities import Capabilities, capabilities
 from llmserve.client.openai_stream import stream_completion
 from llmserve.config.schema import ExperimentConfig
@@ -24,6 +25,7 @@ from llmserve.workload.spec import RequestSpec
 
 GPU_IDLE_UTIL_PCT = 5.0
 CACHE_PROBE_PROMPT = tuple(range(1000, 1128))  # 128 valid token ids, fixed so probes are comparable
+CACHE_PROBE_TEXT = " ".join(str(t) for t in CACHE_PROBE_PROMPT)  # for text-prompt backends
 
 
 class EnvCheckError(RuntimeError):
@@ -71,16 +73,24 @@ async def check_server(
     version: str | None = None
 
     owns_client = client is None
-    client = client if client is not None else httpx.AsyncClient(timeout=10.0)
+    if client is None:
+        try:
+            headers = auth_headers(cfg.server)
+        except AuthEnvError as e:
+            raise EnvCheckError(str(e)) from e
+        client = httpx.AsyncClient(timeout=10.0, headers=headers)
     try:
         try:
             health = await client.get(f"{base}/health")
         except httpx.TransportError as e:
             raise EnvCheckError(f"server not reachable at {base}: {e}") from e
-        if health.status_code != 200:
+        if health.status_code == 200:
+            checks.append("health ok")
+        elif caps.health_endpoint:
             failures.append(f"GET /health → HTTP {health.status_code}")
         else:
-            checks.append("health ok")
+            # Any response proves reachability; the backend simply has no /health (ADR-0010).
+            checks.append(f"reachability ok (HTTP {health.status_code} on /health)")
 
         if caps.version_endpoint:
             version = await _version(client, base, failures, checks, cfg)
@@ -178,11 +188,17 @@ async def _check_prefix_cache(
     if first is None or second is None:
         return "failed (no TTFT for the probe requests)"
     if second < 0.5 * first:
-        failures.append(
+        note = (
             f"prefix cache suspected: identical-prompt TTFT {first * 1e3:.0f} ms → "
             f"{second * 1e3:.0f} ms"
         )
-        return "suspected"
+        if caps.prefix_cache_control:
+            failures.append(note)
+            return "suspected"
+        # Cannot be turned off server-side (e.g. hosted NIM): record it, don't block
+        # (ADR-0010) — dev surfaces are never reportable anyway.
+        checks.append(f"{note} (uncontrollable, note only)")
+        return "suspected (note)"
     checks.append(f"prefix cache probe clean ({first * 1e3:.0f} ms → {second * 1e3:.0f} ms)")
     return "clean"
 
@@ -201,6 +217,7 @@ async def _identical_prompt_ttfts(
         prompt_tokens=len(CACHE_PROBE_PROMPT),
         output_tokens=1,
         prompt_ids=CACHE_PROBE_PROMPT,
+        prompt_text=CACHE_PROBE_TEXT,
     )
     ttfts: list[float | None] = []
     for i in range(2):

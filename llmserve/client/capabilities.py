@@ -1,4 +1,4 @@
-"""Backend capability table (ADR-009).
+"""Backend capability table (ADR-009, ADR-0010).
 
 `server.kind` picks the backend; the harness adapts to what that backend can actually do instead
 of assuming vLLM's API everywhere. Flags are read by the streaming client (prompt format, forced
@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-ServerKind = Literal["mock", "mlx", "llamacpp", "vllm"]
+ServerKind = Literal["mock", "mlx", "llamacpp", "ollama", "lmstudio", "nim", "vllm"]
 
 
 @dataclass(frozen=True)
@@ -39,11 +39,25 @@ class Capabilities:
     prefix_cache_risk: bool
     """Identical prompts may be served from a prefix cache, so TTFT must be probed."""
 
+    prefix_cache_control: bool
+    """The cache can be turned off server-side; otherwise a suspected cache is a note (ADR-0010)."""
+
+    health_endpoint: bool
+    """`GET /health` must answer 200; backends without it are checked for reachability only."""
+
     gpu_metrics: bool
     """NVML/DCGM sampling is meaningful (there is a real GPU behind this backend)."""
 
 
-SERVER_KINDS: tuple[ServerKind, ...] = ("mock", "mlx", "llamacpp", "vllm")
+SERVER_KINDS: tuple[ServerKind, ...] = (
+    "mock",
+    "mlx",
+    "llamacpp",
+    "ollama",
+    "lmstudio",
+    "nim",
+    "vllm",
+)
 
 CAPABILITIES: dict[str, Capabilities] = {
     "mock": Capabilities(
@@ -54,6 +68,8 @@ CAPABILITIES: dict[str, Capabilities] = {
         model_lookup=True,
         metrics_endpoint=False,  # added with the Phase 2 engine
         prefix_cache_risk=False,  # the mock has no cache
+        prefix_cache_control=True,
+        health_endpoint=True,
         gpu_metrics=False,
     ),
     "mlx": Capabilities(
@@ -64,6 +80,8 @@ CAPABILITIES: dict[str, Capabilities] = {
         model_lookup=True,
         metrics_endpoint=False,
         prefix_cache_risk=False,
+        prefix_cache_control=True,
+        health_endpoint=False,
         gpu_metrics=False,
     ),
     "llamacpp": Capabilities(
@@ -73,8 +91,46 @@ CAPABILITIES: dict[str, Capabilities] = {
         version_endpoint=False,
         model_lookup=True,
         metrics_endpoint=False,
-        prefix_cache_risk=False,
+        prefix_cache_risk=False,  # llama.cpp only reuses prompt chunks when opted in
+        prefix_cache_control=True,
+        health_endpoint=False,
         gpu_metrics=False,
+    ),
+    "ollama": Capabilities(
+        token_id_prompts=False,
+        forced_output_length=False,
+        usage_block=True,
+        version_endpoint=False,
+        model_lookup=True,
+        metrics_endpoint=False,
+        prefix_cache_risk=False,  # no cross-request prefix cache in the OpenAI API
+        prefix_cache_control=True,
+        health_endpoint=False,  # serves /api/version, not /health
+        gpu_metrics=False,
+    ),
+    "lmstudio": Capabilities(
+        token_id_prompts=False,
+        forced_output_length=False,
+        usage_block=True,
+        version_endpoint=False,
+        model_lookup=True,
+        metrics_endpoint=False,
+        prefix_cache_risk=False,
+        prefix_cache_control=True,
+        health_endpoint=False,
+        gpu_metrics=False,
+    ),
+    "nim": Capabilities(
+        token_id_prompts=False,  # text prompts; not verified for token IDs
+        forced_output_length=False,  # no ignore_eos contract on the OpenAI surface
+        usage_block=True,
+        version_endpoint=False,
+        model_lookup=True,
+        metrics_endpoint=True,  # container exposes Prometheus /metrics
+        prefix_cache_risk=True,  # TensorRT-LLM context caching may be on
+        prefix_cache_control=False,  # cannot be disabled on a hosted endpoint (ADR-0010)
+        health_endpoint=False,
+        gpu_metrics=True,  # NVML sampling works behind a container; skipped when absent
     ),
     "vllm": Capabilities(
         token_id_prompts=True,
@@ -84,6 +140,8 @@ CAPABILITIES: dict[str, Capabilities] = {
         model_lookup=True,
         metrics_endpoint=True,
         prefix_cache_risk=True,  # must be disabled and asserted at run start
+        prefix_cache_control=True,
+        health_endpoint=True,
         gpu_metrics=True,
     ),
 }

@@ -120,3 +120,60 @@ def test_endpoint_override_checks_the_override() -> None:
             await check_server(make_cfg(), endpoint="http://127.0.0.1:9/v1")
 
     asyncio.run(run())
+
+
+def _backend_handler() -> httpx.MockTransport:
+    """A backend without /health or /version (like ollama/nim), serving /v1/models."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "mock"}]})
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handler)
+
+
+def test_health_404_is_reachability_for_backends_without_health() -> None:
+    async def run() -> None:
+        async with httpx.AsyncClient(transport=_backend_handler()) as client:
+            report = await check_server(make_cfg(kind="ollama"), client=client)
+        assert any(c.startswith("reachability ok") for c in report.checks)
+        assert report.prefix_cache_probe == "skipped (backend has no prefix cache)"
+
+    asyncio.run(run())
+
+
+def test_health_404_is_a_failure_when_the_backend_advertises_health() -> None:
+    async def run() -> None:
+        async with httpx.AsyncClient(transport=_backend_handler()) as client:
+            with pytest.raises(EnvCheckError, match="GET /health"):
+                await check_server(make_cfg(kind="mock"), client=client)
+
+    asyncio.run(run())
+
+
+def test_uncontrollable_prefix_cache_is_a_note_not_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake(*args: Any, **kwargs: Any) -> tuple[float, float]:
+        return (0.100, 0.005)
+
+    monkeypatch.setattr(env_check, "_identical_prompt_ttfts", fake)
+
+    async def run() -> None:
+        async with httpx.AsyncClient(transport=_backend_handler()) as client:
+            report = await check_server(make_cfg(kind="nim"), client=client)
+        assert report.prefix_cache_probe == "suspected (note)"
+        assert any("note only" in c for c in report.checks)
+
+    asyncio.run(run())
+
+
+def test_missing_api_key_is_an_env_check_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LLMSERVE_TEST_KEY", raising=False)
+
+    async def run() -> None:
+        with pytest.raises(EnvCheckError, match="LLMSERVE_TEST_KEY"):
+            await check_server(make_cfg(kind="nim", api_key_env="LLMSERVE_TEST_KEY"))
+
+    asyncio.run(run())

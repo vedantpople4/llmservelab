@@ -7,7 +7,7 @@ repetitions: 5
 server:
   kind: vllm
   endpoint: http://localhost:8000/v1
-  model: Qwen/Qwen2.5-7B-Instruct
+  model: Qwen/Qwen2.5-7B-Instruct-AWQ  # §6 re-pin (ADR-0011): INT4 on one T4
   model_revision: null        # pin the commit SHA before Phase 3 runs
   prefix_caching: false
 
