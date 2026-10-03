@@ -13,6 +13,12 @@ from dataclasses import dataclass
 
 from llmserve.scheduler.base import Priority
 
+PRIORITY_BY_NAME: dict[str, Priority] = {
+    "high": Priority.HIGH,
+    "medium": Priority.MEDIUM,
+    "low": Priority.LOW,
+}
+
 
 @dataclass(frozen=True, kw_only=True)
 class RequestSpec:

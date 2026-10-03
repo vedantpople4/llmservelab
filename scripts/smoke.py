@@ -26,12 +26,9 @@ from llmserve.metrics import latency
 from llmserve.metrics.records import RequestRecord
 from llmserve.runner.clock import RunClock
 from llmserve.runner.env_check import EnvCheckError, check_server
-from llmserve.scheduler.base import Priority
 from llmserve.workload.distributions import sample
 from llmserve.workload.prompts import PromptBuilder
-from llmserve.workload.spec import RequestSpec
-
-_PRIORITY = {"high": Priority.HIGH, "medium": Priority.MEDIUM, "low": Priority.LOW}
+from llmserve.workload.spec import PRIORITY_BY_NAME, RequestSpec
 
 
 def build_specs(cfg: ExperimentConfig, n: int, builder: PromptBuilder) -> list[RequestSpec]:
@@ -54,7 +51,7 @@ def build_specs(cfg: ExperimentConfig, n: int, builder: PromptBuilder) -> list[R
                 output_tokens=output_tokens,
                 prompt_ids=tuple(ids),
                 prompt_text=builder.text(ids),
-                priority=int(_PRIORITY[cls.priority]),
+                priority=PRIORITY_BY_NAME[cls.priority],
                 slo_ttft_ms=cls.slo.ttft_ms,
                 slo_tpot_ms=cls.slo.tpot_ms,
             )
