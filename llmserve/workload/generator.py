@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pyarrow as pa
 import pyarrow.parquet as pq
 from numpy.random import Generator, SeedSequence, default_rng
@@ -62,6 +63,7 @@ def materialize(
     builder = builder or PromptBuilder.default()
     rng_arrivals, rng_classes, rng_prompt_len, rng_output_len, rng_prompts = _streams(cfg.seed, rep)
 
+    offsets: npt.NDArray[np.float64]
     if cfg.load.mode == "closed":
         if cfg.load.requests is None:
             raise ValueError(

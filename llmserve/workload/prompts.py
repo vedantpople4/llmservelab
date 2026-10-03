@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import numpy as np
+import numpy.typing as npt
 import tokenizers
 
 CORPUS_PATH = Path(__file__).resolve().parent.parent / "data" / "corpus.txt"
@@ -77,7 +78,7 @@ def load_tokenizer(cache_dir: Path | None = None) -> QwenTokenizer:
 
 
 @lru_cache(maxsize=1)
-def load_corpus_tokens() -> np.ndarray:
+def load_corpus_tokens() -> npt.NDArray[np.int64]:
     """Tokenize the bundled corpus once per process."""
     tokenizer = load_tokenizer()
     text = CORPUS_PATH.read_text(encoding="utf-8")
@@ -90,7 +91,7 @@ class PromptBuilder:
     def __init__(
         self,
         tokenizer: Tokenizer,
-        corpus_tokens: np.ndarray,
+        corpus_tokens: npt.NDArray[np.int64],
         *,
         nonce_tokens: int = NONCE_TOKENS,
     ) -> None:

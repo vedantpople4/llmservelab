@@ -22,6 +22,7 @@ an under-filled workload.
 from __future__ import annotations
 
 import numpy as np
+import numpy.typing as npt
 from numpy.random import Generator
 
 from llmserve.config.schema import Bursty, Constant, Load, Poisson, Replay
@@ -37,13 +38,15 @@ def _rate(arrival: Constant | Poisson, capacity_rps: float | None) -> float:
     return arrival.rho * capacity_rps
 
 
-def _poisson(rate: float, rng: Generator, *, want: int | None, horizon: float | None) -> np.ndarray:
+def _poisson(
+    rate: float, rng: Generator, *, want: int | None, horizon: float | None
+) -> npt.NDArray[np.float64]:
     """Exponential gaps, stopping at `want` arrivals and/or the `horizon`."""
     if horizon is None:
         if want is None:  # pragma: no cover - the schema requires requests and/or duration
             raise ValueError("open-loop load needs `requests`, `duration_s`, or both")
         return np.cumsum(rng.exponential(1.0 / rate, size=want))
-    chunks: list[np.ndarray] = []
+    chunks: list[npt.NDArray[np.float64]] = []
     total, t0 = 0, 0.0
     while True:
         size = max(64, int(horizon * rate * 0.25))
@@ -60,7 +63,7 @@ def _poisson(rate: float, rng: Generator, *, want: int | None, horizon: float | 
     return offsets[:want] if want is not None else offsets
 
 
-def _constant(rate: float, *, want: int | None, horizon: float | None) -> np.ndarray:
+def _constant(rate: float, *, want: int | None, horizon: float | None) -> npt.NDArray[np.float64]:
     if want is not None:
         return np.arange(want, dtype=np.float64) / rate
     assert horizon is not None  # schema requires requests and/or duration
@@ -68,12 +71,12 @@ def _constant(rate: float, *, want: int | None, horizon: float | None) -> np.nda
     return np.arange(n, dtype=np.float64) / rate
 
 
-def _bursty(arrival: Bursty, rng: Generator) -> np.ndarray:
-    chunks: list[np.ndarray] = []
+def _bursty(arrival: Bursty, rng: Generator) -> npt.NDArray[np.float64]:
+    chunks: list[npt.NDArray[np.float64]] = []
     phase_start = 0.0
     for phase in arrival.phases:
         duration, rate = phase.duration_s, phase.rate
-        local: list[np.ndarray] = []
+        local: list[npt.NDArray[np.float64]] = []
         t_local = 0.0
         while True:
             size = max(16, int(duration * rate * 0.25) + 4)
@@ -88,7 +91,7 @@ def _bursty(arrival: Bursty, rng: Generator) -> np.ndarray:
     return np.concatenate(chunks)
 
 
-def _replay(arrival: Replay) -> np.ndarray:
+def _replay(arrival: Replay) -> npt.NDArray[np.float64]:
     try:
         raw = np.atleast_1d(np.loadtxt(arrival.trace))
     except (OSError, ValueError) as e:
@@ -103,7 +106,7 @@ def _replay(arrival: Replay) -> np.ndarray:
     return offsets / arrival.time_scale
 
 
-def generate_arrivals(load: Load, rng: Generator) -> np.ndarray:
+def generate_arrivals(load: Load, rng: Generator) -> npt.NDArray[np.float64]:
     """Arrival offsets (seconds, non-decreasing) for an open-loop `load`.
 
     Uses `rng` only for the stochastic processes; the same seed replays the same arrivals.
