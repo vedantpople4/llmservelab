@@ -81,7 +81,7 @@ server = subprocess.Popen(
         "--gpu-memory-utilization",
         "0.90",
         "--dtype",
-        "auto",
+        "float16",
         "--no-enable-prefix-caching",
         "--max-num-seqs",
         "256",
@@ -104,8 +104,18 @@ else:
     raise RuntimeError("vLLM did not become healthy")
 ```
 
-vLLM is pinned to the same version as `docker/compose.yml`'s `VLLM_IMAGE`. **Phase 1's first
-task is to verify AWQ kernels actually run on sm_75** — if they don't, switch to
+vLLM is pinned to the same version as `docker/compose.yml`'s `VLLM_IMAGE`. Two log lines
+look alarming but are **expected** on this SKU:
+
+- `Compute Capability < 8.0 is not supported by the V1 Engine. Falling back to V0` — the
+  pinned vLLM serves Turing on its V0 engine; the T4 numbers in this study are V0-engine
+  numbers, and that is part of the SKU's identity.
+- a bf16 → fp16 downgrade warning — Qwen2.5's config is bf16 and Turing has no bf16 silicon;
+  Cell 2 pins `--dtype float16` so the downgrade is explicit rather than incidental.
+
+**Phase 1's first task is to verify AWQ kernels actually run on sm_75.** vLLM documents
+compute capability ≥ 7.5 (T4 named) and AWQ as Turing-supported, so this is a bring-up
+check, not a known-broken path — if it still fails, switch to
 `Qwen/Qwen2.5-7B-Instruct-GPTQ-INT4` (same card, same precision class; ADR-0011).
 
 ### Cell 3 — env check + smoke (the Phase 1 exit check)
@@ -143,6 +153,8 @@ sessions.
 | P100 default session | vLLM kernels fail (sm_60) | Settings → T4 ×2, or `machine_shape` in metadata |
 | `kaggle kernels push --accelerator` | silently lands on P100 | `machine_shape: "NvidiaTeslaT4"` |
 | Docker habit | Kaggle has no Docker | this runbook's pip path; compose is for GPU hosts |
-| AWQ kernels on Turing | server crash at load | verify at Phase 1; fallback GPTQ-INT4 (ADR-0011) |
+| AWQ kernels on Turing | server fails at model load | documented as supported (CC ≥ 7.5, AWQ ✅ Turing); verify at Cell 2, fallback GPTQ-INT4 (ADR-0011) |
+| `--dtype auto` | some vLLM versions hard-error on a bf16 config with T4 | Cell 2 pins `--dtype float16` |
+| V0-engine fallback warning | looks like a broken install | expected on the pinned vLLM; record it, T4 numbers are V0-engine numbers |
 | Model name mismatch | env check: `model mismatch` | configs pin `Qwen/Qwen2.5-7B-Instruct-AWQ`, and so does `vllm serve` |
 | Idle GPU session | quota drains for free | stop the session when idle |
