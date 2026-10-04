@@ -21,7 +21,13 @@ dependencies = [
 # It must be *declared*, not `uv pip install`-ed out-of-band: `uv sync --locked` (the Kaggle
 # runbook's install step of record) only provisions declared dependencies, so an undeclared
 # vllm is simply absent and `uv run vllm` fails with "Failed to spawn: vllm".
-gpu = ["nvidia-ml-py>=12", "vllm==0.10.2; sys_platform == 'linux'"]
+# transformers: vllm 0.10.2 declares `>=4.55.2` unbounded, but 5.x removed
+# `all_special_tokens_extended`, which its tokenizer wrapper reads at startup.
+gpu = [
+    "nvidia-ml-py>=12",
+    "transformers>=4.55.2,<5; sys_platform == 'linux'",
+    "vllm==0.10.2; sys_platform == 'linux'",
+]
 mock = ["fastapi>=0.111", "uvicorn>=0.30"]
 dev = ["pytest>=8", "ruff>=0.5", "mypy>=1.10", "hypothesis>=6.100", "types-PyYAML"]
 
@@ -45,5 +51,5 @@ select = ["E", "F", "I", "UP", "B"]
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["pyarrow.*", "scipy.*", "matplotlib.*", "pynvml.*"]
+module = ["pyarrow.*", "scipy.*", "matplotlib.*", "pynvml.*", "tokenizers.*"]
 ignore_missing_imports = true

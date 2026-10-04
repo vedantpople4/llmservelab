@@ -47,13 +47,16 @@ class QwenTokenizer:
 
     @property
     def vocab_size(self) -> int:
-        return self._raw.get_vocab_size(with_added_tokens=False)
+        size: int = self._raw.get_vocab_size(with_added_tokens=False)
+        return size
 
     def encode(self, text: str) -> list[int]:
-        return self._raw.encode(text, add_special_tokens=False).ids
+        ids: list[int] = self._raw.encode(text, add_special_tokens=False).ids
+        return ids
 
     def decode(self, ids: list[int]) -> str:
-        return self._raw.decode(list(ids))
+        text: str = self._raw.decode(list(ids))
+        return text
 
 
 def load_tokenizer(cache_dir: Path | None = None) -> QwenTokenizer:
