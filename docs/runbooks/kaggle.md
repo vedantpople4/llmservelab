@@ -47,8 +47,9 @@ not honored on push.
 %cd /kaggle/working/llmservelab
 !pip install -q uv
 # vllm==0.10.2 comes from the locked `gpu` extra (pin matches docker/compose.yml's VLLM_IMAGE).
-# Do NOT `uv pip install vllm` instead: `uv run` exact-syncs the env and deletes undeclared
-# packages, which surfaces as "Failed to spawn: vllm" in Cell 2.
+# Do NOT `uv pip install vllm` as a one-off: `uv sync --locked` is the install step of record and
+# only provisions declared dependencies — an undeclared vllm is simply absent, and Cell 2 then
+# fails with "Failed to spawn: vllm".
 !uv sync --locked --extra dev --extra mock --extra gpu
 ```
 
@@ -158,6 +159,6 @@ sessions.
 | AWQ kernels on Turing | server fails at model load | documented as supported (CC ≥ 7.5, AWQ ✅ Turing); verify at Cell 2, fallback GPTQ-INT4 (ADR-0011) |
 | `--dtype auto` | some vLLM versions hard-error on a bf16 config with T4 | Cell 2 pins `--dtype float16` |
 | V0-engine fallback warning | looks like a broken install | expected on the pinned vLLM; record it, T4 numbers are V0-engine numbers |
-| `uv pip install vllm` + `uv run` | `Failed to spawn: vllm` — `uv run` exact-syncs and deletes undeclared packages | install vllm via `uv sync --extra gpu` (it is a locked dependency) |
+| one-off `uv pip install vllm` | `Failed to spawn: vllm` — `uv sync --locked` never installs undeclared packages | vllm is a locked `gpu`-extra dependency; install only via `uv sync` |
 | Model name mismatch | env check: `model mismatch` | configs pin `Qwen/Qwen2.5-7B-Instruct-AWQ`, and so does `vllm serve` |
 | Idle GPU session | quota drains for free | stop the session when idle |
