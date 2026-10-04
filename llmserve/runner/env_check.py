@@ -11,6 +11,7 @@ run metadata can say what was and was not verified.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, replace
 
 import httpx
@@ -24,8 +25,15 @@ from llmserve.runner.clock import RunClock
 from llmserve.workload.spec import RequestSpec
 
 GPU_IDLE_UTIL_PCT = 5.0
+GPU_SETTLE_S = 2.0  # NVML keeps reporting finished-request traffic for ~1 s after the request
+GPU_SAMPLE_S = 0.5
+GPU_SAMPLES = 3
 CACHE_PROBE_PROMPT = tuple(range(1000, 1128))  # 128 valid token ids, fixed so probes are comparable
 CACHE_PROBE_TEXT = " ".join(str(t) for t in CACHE_PROBE_PROMPT)  # for text-prompt backends
+# Same length as the probe (identical kernel shapes) but different content, so warming up with it
+# cannot prime the cache the probe is testing for.
+WARMUP_PROMPT = tuple(t + 500 for t in CACHE_PROBE_PROMPT)
+WARMUP_TEXT = " ".join(str(t) for t in WARMUP_PROMPT)
 
 
 class EnvCheckError(RuntimeError):
@@ -209,22 +217,35 @@ async def _identical_prompt_ttfts(
     client: httpx.AsyncClient,
     endpoint: str,
 ) -> tuple[float | None, float | None] | None:
-    """Two identical short requests; a much faster second TTFT means a prefix cache hit."""
+    """Two identical short requests; a much faster second TTFT means a prefix cache hit.
+
+    A discarded warm-up request runs first: the first-ever request to a fresh server pays lazy
+    compilation (measured: ~7.5 s cold vs ~0.3 s warm), which would otherwise look exactly like
+    a cache hit. The warm-up carries a *different* prompt for the same reason in reverse:
+    warming with the probe prompt could prime a real prefix cache and hide what is being tested.
+    """
     clock = RunClock()
     base_spec = RequestSpec(
-        request_id="env-probe",
+        request_id="env-probe-0",
         workload_class="env_check",
         prompt_tokens=len(CACHE_PROBE_PROMPT),
         output_tokens=1,
         prompt_ids=CACHE_PROBE_PROMPT,
         prompt_text=CACHE_PROBE_TEXT,
     )
+    warmup_spec = replace(
+        base_spec,
+        request_id="env-probe-warmup",
+        prompt_ids=WARMUP_PROMPT,
+        prompt_text=WARMUP_TEXT,
+    )
     ttfts: list[float | None] = []
-    for i in range(2):
+    specs = (warmup_spec, base_spec, replace(base_spec, request_id="env-probe-1"))
+    for i, spec in enumerate(specs):
         t0 = clock()
         record = await stream_completion(
             client,
-            replace(base_spec, request_id=f"env-probe-{i}"),
+            spec,
             clock,
             endpoint=endpoint,
             model=cfg.server.model,
@@ -234,7 +255,8 @@ async def _identical_prompt_ttfts(
         )
         if not record.ok:
             return None
-        ttfts.append(latency.ttft(record))
+        if i:  # the warm-up request is discarded
+            ttfts.append(latency.ttft(record))
     return ttfts[0], ttfts[1]
 
 
@@ -242,7 +264,7 @@ def _check_gpu(caps: Capabilities, failures: list[str], checks: list[str]) -> bo
     if not caps.gpu_metrics:
         checks.append("GPU check skipped (backend has no GPU metrics)")
         return None
-    util = _gpu_utilization()
+    util = _settled_gpu_utilization()
     if util is None:
         checks.append("GPU check skipped (NVML unavailable)")
         return None
@@ -251,6 +273,26 @@ def _check_gpu(caps: Capabilities, failures: list[str], checks: list[str]) -> bo
         return False
     checks.append(f"GPU idle ({util:.0f}%)")
     return True
+
+
+def _settled_gpu_utilization() -> float | None:
+    """Wait for finished-request traffic to age out of NVML's window, then take the worst sample.
+
+    Sampled immediately after a request, NVML still reports that request's traffic (measured on
+    T4: 100% right after, 0% one second later), which would fail a server that is in fact idle.
+    A genuinely busy GPU stays high across every sample.
+    """
+    if _gpu_utilization() is None:
+        return None  # NVML unavailable — no reason to sleep
+    time.sleep(GPU_SETTLE_S)
+    samples: list[float] = []
+    for i in range(GPU_SAMPLES):
+        util = _gpu_utilization()
+        if util is not None:
+            samples.append(util)
+        if i < GPU_SAMPLES - 1:
+            time.sleep(GPU_SAMPLE_S)
+    return max(samples) if samples else None
 
 
 def _gpu_utilization() -> float | None:

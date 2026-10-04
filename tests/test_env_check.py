@@ -1,13 +1,17 @@
 import asyncio
+import time
 from typing import Any
 
 import httpx
 import pytest
 
+from llmserve.client.capabilities import capabilities
 from llmserve.config.schema import ExperimentConfig
+from llmserve.metrics.records import RequestRecord, RequestStatus
 from llmserve.mock import DelayModel, MockEngine, create_app
 from llmserve.runner import env_check
 from llmserve.runner.env_check import EnvCheckError, check_server
+from llmserve.workload.spec import RequestSpec
 
 
 def make_cfg(**server: Any) -> ExperimentConfig:
@@ -177,3 +181,92 @@ def test_missing_api_key_is_an_env_check_failure(monkeypatch: pytest.MonkeyPatch
             await check_server(make_cfg(kind="nim", api_key_env="LLMSERVE_TEST_KEY"))
 
     asyncio.run(run())
+
+
+def test_prefix_probe_discards_a_warmup_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The first-ever request pays lazy compilation, so it must not enter the comparison —
+    and the warm-up must use a different prompt, or it could prime a real prefix cache."""
+    seen: list[tuple[str, tuple[int, ...]]] = []
+    ttft_ns = iter([7_000_000_000, 330_000_000, 320_000_000])  # cold first request, then warm
+
+    async def fake_stream_completion(*args: Any, **kwargs: Any) -> RequestRecord:
+        spec: RequestSpec = args[1]
+        clock: Any = args[2]
+        seen.append((spec.request_id, tuple(spec.prompt_ids)))
+        arrival = clock()
+        return RequestRecord(
+            request_id=spec.request_id,
+            workload_class=spec.workload_class,
+            priority=0,
+            prompt_tokens_req=spec.prompt_tokens,
+            output_tokens_req=spec.output_tokens,
+            status=RequestStatus.OK,
+            t_arrival=arrival,
+            t_first_token=arrival + next(ttft_ns),
+        )
+
+    monkeypatch.setattr(env_check, "stream_completion", fake_stream_completion)
+
+    async def run() -> None:
+        async with httpx.AsyncClient() as client:
+            ttfts = await env_check._identical_prompt_ttfts(
+                make_cfg(kind="vllm"), capabilities("vllm"), client, "http://test/v1"
+            )
+        assert ttfts is not None
+        first, second = ttfts
+        assert first == pytest.approx(0.33)
+        assert second == pytest.approx(0.32)
+        assert [request_id for request_id, _ in seen] == [
+            "env-probe-warmup",
+            "env-probe-0",
+            "env-probe-1",
+        ]
+        warmup, probe_a, probe_b = [prompt for _, prompt in seen]
+        assert probe_a == probe_b  # the measured pair must be identical
+        assert warmup != probe_a and len(warmup) == len(probe_a)
+
+    asyncio.run(run())
+
+
+def test_gpu_check_waits_out_trailing_request_traffic(monkeypatch: pytest.MonkeyPatch) -> None:
+    reads = iter([100.0, 0.0, 0.0, 0.0])  # contaminated pre-settle read, then settled idle
+    sleeps: list[float] = []
+    monkeypatch.setattr(env_check, "_gpu_utilization", lambda: next(reads))
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    failures: list[str] = []
+    checks: list[str] = []
+    idle = env_check._check_gpu(capabilities("vllm"), failures, checks)
+
+    assert idle is True
+    assert failures == []
+    assert any(c.startswith("GPU idle") for c in checks)
+    assert sleeps == [env_check.GPU_SETTLE_S, env_check.GPU_SAMPLE_S, env_check.GPU_SAMPLE_S]
+
+
+def test_gpu_check_fails_when_the_gpu_stays_busy(monkeypatch: pytest.MonkeyPatch) -> None:
+    reads = iter([100.0, 96.0, 97.0, 96.0])
+    monkeypatch.setattr(env_check, "_gpu_utilization", lambda: next(reads))
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+
+    failures: list[str] = []
+    checks: list[str] = []
+    idle = env_check._check_gpu(capabilities("vllm"), failures, checks)
+
+    assert idle is False
+    assert "GPU is busy: 97% utilization" in failures[0]
+    assert checks == []
+
+
+def test_gpu_check_skips_without_nvml_without_sleeping(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr(env_check, "_gpu_utilization", lambda: None)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    failures: list[str] = []
+    checks: list[str] = []
+    idle = env_check._check_gpu(capabilities("vllm"), failures, checks)
+
+    assert idle is None
+    assert any("NVML unavailable" in c for c in checks)
+    assert sleeps == []

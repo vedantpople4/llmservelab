@@ -107,19 +107,19 @@ else:
     raise RuntimeError("vLLM did not become healthy")
 ```
 
-vLLM is pinned to the same version as `docker/compose.yml`'s `VLLM_IMAGE`. Two log lines
-look alarming but are **expected** on this SKU:
+vLLM is pinned to the same version as `docker/compose.yml`'s `VLLM_IMAGE`. Observed at first
+bring-up (October 2026, T4):
 
-- `Compute Capability < 8.0 is not supported by the V1 Engine. Falling back to V0` — the
-  pinned vLLM serves Turing on its V0 engine; the T4 numbers in this study are V0-engine
-  numbers, and that is part of the SKU's identity.
+- `Using FlexAttention backend on V1 engine` — vLLM 0.10.2 serves Turing on the **V1** engine.
+  Earlier notes predicted a `Falling back to V0` warning for compute capability < 8.0; this
+  version does not emit it. (If a version change ever brings the V0 fallback back, that is
+  also expected behavior — record which engine produced the numbers.)
 - a bf16 → fp16 downgrade warning — Qwen2.5's config is bf16 and Turing has no bf16 silicon;
   Cell 2 pins `--dtype float16` so the downgrade is explicit rather than incidental.
 
-**Phase 1's first task is to verify AWQ kernels actually run on sm_75.** vLLM documents
-compute capability ≥ 7.5 (T4 named) and AWQ as Turing-supported, so this is a bring-up
-check, not a known-broken path — if it still fails, switch to
-`Qwen/Qwen2.5-7B-Instruct-GPTQ-INT4` (same card, same precision class; ADR-0011).
+**AWQ on sm_75 is verified**: the first bring-up loaded `Qwen2.5-7B-Instruct-AWQ` and served
+probe requests with `Prefix cache hit rate: 0.0%` on V1. If a future vLLM version breaks it,
+switch to `Qwen/Qwen2.5-7B-Instruct-GPTQ-INT4` (same card, same precision class; ADR-0011).
 
 ### Cell 3 — env check + smoke (the Phase 1 exit check)
 
@@ -130,8 +130,11 @@ check, not a known-broken path — if it still fails, switch to
 
 `env_check` asserts health, served model, `prefix_caching: false` plus the identical-prompt
 TTFT probe, and **GPU idle < 5%** — so don't run anything else in the notebook while the
-server is up (vLLM loaded but not serving shows ~0% util, which passes). `smoke` exits 0 only
-with 100/100 `ok` and no usage mismatches: that is the Phase 1 exit check.
+server is up (vLLM loaded but not serving shows ~0% util, which passes). The probe opens with
+a discarded warm-up request (the first-ever request to a fresh server pays lazy compilation
+and would otherwise look like a cache hit), and the GPU sample waits ~3 s for request traffic
+to age out of NVML's utilization window. `smoke` exits 0 only with 100/100 `ok` and no usage
+mismatches: that is the Phase 1 exit check.
 
 ### Cell 4 — artifacts
 
@@ -156,9 +159,10 @@ sessions.
 | P100 default session | vLLM kernels fail (sm_60) | Settings → T4 ×2, or `machine_shape` in metadata |
 | `kaggle kernels push --accelerator` | silently lands on P100 | `machine_shape: "NvidiaTeslaT4"` |
 | Docker habit | Kaggle has no Docker | this runbook's pip path; compose is for GPU hosts |
-| AWQ kernels on Turing | server fails at model load | documented as supported (CC ≥ 7.5, AWQ ✅ Turing); verify at Cell 2, fallback GPTQ-INT4 (ADR-0011) |
+| AWQ kernels on Turing | server fails at model load | **verified working on sm_75** (first bring-up, Oct 2026); if a version breaks it, fallback GPTQ-INT4 (ADR-0011) |
 | `--dtype auto` | some vLLM versions hard-error on a bf16 config with T4 | Cell 2 pins `--dtype float16` |
-| V0-engine fallback warning | looks like a broken install | expected on the pinned vLLM; record it, T4 numbers are V0-engine numbers |
+| unbounded `transformers` with pinned vllm | server dies at startup: `Qwen2Tokenizer has no attribute all_special_tokens_extended` | `gpu` extra pins `transformers>=4.55.2,<5` |
+| private repo | `git clone` hangs on `Username for 'https://github.com':` | make the repo public, or clone with a PAT |
 | one-off `uv pip install vllm` | `Failed to spawn: vllm` — `uv sync --locked` never installs undeclared packages | vllm is a locked `gpu`-extra dependency; install only via `uv sync` |
 | Model name mismatch | env check: `model mismatch` | configs pin `Qwen/Qwen2.5-7B-Instruct-AWQ`, and so does `vllm serve` |
 | Idle GPU session | quota drains for free | stop the session when idle |

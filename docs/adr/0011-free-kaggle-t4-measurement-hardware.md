@@ -31,7 +31,9 @@ which keeps the KV-pressure hypothesis (H6) reachable at the planned load mixes.
   Qwen2.5-7B GPTQ-INT4 on the same card — same model, same precision class, new pin.
   Pre-run research (October 2026) confirms vLLM documents compute capability ≥ 7.5 with
   the T4 named, and AWQ as Turing-supported, so the residual risk is bring-up friction
-  rather than missing support. The pinned vLLM serves Turing on its V0 engine (`dtype` must
-  be pinned to float16 — Turing has no bf16 silicon), so T4 numbers are V0-engine numbers.
+  rather than missing support. Bring-up (October 2026) confirmed AWQ serving on sm_75, and
+  vLLM 0.10.2 runs Turing on its **V1** engine (no `Falling back to V0` warning, contrary to
+  earlier expectations for compute capability < 8.0); `dtype` is pinned to float16 because
+  Turing has no bf16 silicon. T4 numbers are V1-engine, fp16, AWQ-weight numbers.
 - Reported numbers are fp16-on-T4, AWQ weights. They never get compared against bf16 output
   or another card, and limitations says so.
