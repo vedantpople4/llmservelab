@@ -70,6 +70,10 @@ class RequestRecord:
     kv_usage_at_dispatch: float | None = None
     bypass_count: int | None = None
 
+    # Open loop only: actual send time − scheduled send time (None when the request was not
+    # scheduled). The harness-overhead metric: against the mock, P99 must stay under 5 ms.
+    client_lag_ns: int | None = None
+
     extra: dict[str, float] = field(default_factory=dict)
 
     @property
@@ -127,6 +131,7 @@ REQUEST_SCHEMA = pa.schema(
         ("in_flight_at_dispatch", pa.int32()),
         ("kv_usage_at_dispatch", pa.float64()),
         ("bypass_count", pa.int32()),
+        ("client_lag_ns", pa.int64()),
     ]
 )
 

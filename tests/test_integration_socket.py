@@ -21,8 +21,10 @@ import pytest
 from llmserve.client.capabilities import capabilities
 from llmserve.client.openai_stream import stream_completion
 from llmserve.config.schema import ExperimentConfig
+from llmserve.metrics.records import RequestRecord
 from llmserve.runner.clock import RunClock
 from llmserve.runner.env_check import check_server
+from llmserve.runner.run import drive
 from llmserve.workload.prompts import PromptBuilder
 from llmserve.workload.spec import RequestSpec
 
@@ -127,6 +129,47 @@ def test_stream_completion_over_a_real_socket(mock_url: str) -> None:
         assert rec.http_status == 200
 
     asyncio.run(run())
+
+
+def test_closed_loop_driver_over_a_real_socket(mock_url: str) -> None:
+    cfg = ExperimentConfig.model_validate(
+        {
+            "schema_version": 1,
+            "experiment": "socket-driver",
+            "seed": 42,
+            "server": {"kind": "mock", "endpoint": f"{mock_url}/v1", "model": "mock"},
+            "load": {"mode": "closed", "concurrency": 4, "requests": 20},
+            "workload": {
+                "classes": [
+                    {
+                        "name": "c",
+                        "prompt": {"distribution": "fixed", "tokens": 16},
+                        "output": {"distribution": "fixed", "tokens": 4},
+                    }
+                ]
+            },
+        }
+    )
+    specs = [
+        RequestSpec(
+            request_id=f"sock-drv-{i}",
+            workload_class="c",
+            prompt_tokens=16,
+            output_tokens=4,
+            prompt_ids=tuple(range(100 + i, 116 + i)),
+        )
+        for i in range(20)
+    ]
+
+    async def run() -> list[RequestRecord]:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            return await drive(cfg, specs, clock=RunClock(), client=client, caps=CAPS)
+
+    records = asyncio.run(run())
+    assert len(records) == 20
+    failed = [r for r in records if not r.ok]
+    assert not failed, [(r.request_id, r.status.value, r.error) for r in failed]
+    assert all(r.client_lag_ns is None for r in records)  # closed loop has no schedule
 
 
 def test_smoke_script_exit_code_over_a_real_socket(mock_url: str) -> None:
