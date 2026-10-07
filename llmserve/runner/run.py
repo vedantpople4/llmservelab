@@ -15,15 +15,17 @@
 `load.duration_s` stops the closed loop issuing new work and drops open-loop arrivals at or
 after the deadline.
 
-Direct mode: the driver calls the streaming client itself. `max_in_flight` bounding and
-scheduling arrive with the gateway (plan item 6); until then an open-loop burst is limited
-only by the arrival process — which is the point of open loop.
+Send path: with `gateway.enabled: false` the driver calls the streaming client directly; with
+it enabled, submissions go through the in-process gateway (`gateway/core.py`), which bounds
+in-flight requests with `gateway.max_in_flight` and admits them through the configured
+scheduler. Same clock either way (ADR-0002/ADR-006).
 """
 
 from __future__ import annotations
 
 import asyncio
 import dataclasses
+import functools
 from collections.abc import Callable
 
 import httpx
@@ -31,8 +33,10 @@ import httpx
 from llmserve.client.capabilities import Capabilities
 from llmserve.client.openai_stream import stream_completion
 from llmserve.config.schema import ExperimentConfig
+from llmserve.gateway.core import Gateway, Sender
 from llmserve.metrics.records import RequestRecord
 from llmserve.runner.clock import Clock
+from llmserve.scheduler import registry
 from llmserve.workload.spec import RequestSpec, Workload
 
 
@@ -48,28 +52,32 @@ async def drive(
 ) -> list[RequestRecord]:
     """Run `workload` under `cfg.load`; returns one record per request, in arrival order."""
     target = endpoint or cfg.server.endpoint
-    if cfg.load.mode == "closed":
-        records = await _drive_closed(
-            cfg,
-            workload,
+    direct: Sender = functools.partial(_send, cfg, client, caps, clock, target, token_counter)
+    if cfg.gateway.enabled:
+        gateway = Gateway(
+            max_in_flight=cfg.gateway.max_in_flight,
+            scheduler=registry.create(cfg.gateway.scheduler.name, cfg.gateway.scheduler.params),
             clock=clock,
-            client=client,
-            caps=caps,
-            endpoint=target,
-            token_counter=token_counter,
+            send=direct,
         )
+        async with gateway:
+            records = await _drive(cfg, workload, clock=clock, send=gateway.submit)
     else:
-        records = await _drive_open(
-            cfg,
-            workload,
-            clock=clock,
-            client=client,
-            caps=caps,
-            endpoint=target,
-            token_counter=token_counter,
-        )
+        records = await _drive(cfg, workload, clock=clock, send=direct)
     records.sort(key=lambda r: (r.t_arrival, r.request_id))
     return records
+
+
+async def _drive(
+    cfg: ExperimentConfig,
+    workload: Workload,
+    *,
+    clock: Clock,
+    send: Sender,
+) -> list[RequestRecord]:
+    if cfg.load.mode == "closed":
+        return await _drive_closed(cfg, workload, clock=clock, send=send)
+    return await _drive_open(cfg, workload, clock=clock, send=send)
 
 
 async def _send(
@@ -100,10 +108,7 @@ async def _drive_closed(
     workload: Workload,
     *,
     clock: Clock,
-    client: httpx.AsyncClient,
-    caps: Capabilities,
-    endpoint: str,
-    token_counter: Callable[[str], int] | None,
+    send: Sender,
 ) -> list[RequestRecord]:
     load = cfg.load
     specs = workload[: load.requests] if load.requests is not None else workload
@@ -118,9 +123,7 @@ async def _drive_closed(
             spec = next(shared, None)
             if spec is None:
                 return
-            records.append(
-                await _send(cfg, client, caps, clock, endpoint, token_counter, spec, clock())
-            )
+            records.append(await send(spec, clock()))
 
     workers = load.concurrency
     if workers is None:  # unreachable: the schema requires concurrency in closed mode
@@ -134,10 +137,7 @@ async def _drive_open(
     workload: Workload,
     *,
     clock: Clock,
-    client: httpx.AsyncClient,
-    caps: Capabilities,
-    endpoint: str,
-    token_counter: Callable[[str], int] | None,
+    send: Sender,
 ) -> list[RequestRecord]:
     load = cfg.load
     specs = sorted(workload, key=lambda s: s.arrival_offset_s)
@@ -150,7 +150,7 @@ async def _drive_open(
     async def fire(spec: RequestSpec) -> RequestRecord:
         scheduled_ns = t0_ns + int(round(spec.arrival_offset_s * 1e9))
         lag_ns = clock() - scheduled_ns  # actual send start − schedule; >= 0 by construction
-        rec = await _send(cfg, client, caps, clock, endpoint, token_counter, spec, scheduled_ns)
+        rec = await send(spec, scheduled_ns)
         return dataclasses.replace(rec, client_lag_ns=lag_ns)
 
     tasks: list[asyncio.Task[RequestRecord]] = []

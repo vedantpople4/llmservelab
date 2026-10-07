@@ -23,7 +23,7 @@ from llmserve.workload.spec import RequestSpec
 CAPS = capabilities("mock")
 
 
-def make_cfg(**load: Any) -> ExperimentConfig:
+def make_cfg(*, gateway: Any = None, **load: Any) -> ExperimentConfig:
     # The driver consumes materialized specs, so `arrival` only has to satisfy the schema;
     # the offsets under test live on the specs themselves.
     if load.get("mode") == "open":
@@ -31,24 +31,25 @@ def make_cfg(**load: Any) -> ExperimentConfig:
     else:
         base = {"concurrency": 1}
     base.update(load)
-    return ExperimentConfig.model_validate(
-        {
-            "schema_version": 1,
-            "experiment": "driver-test",
-            "seed": 7,
-            "server": {"kind": "mock", "endpoint": "http://test/v1", "model": "mock"},
-            "load": base,
-            "workload": {
-                "classes": [
-                    {
-                        "name": "c",
-                        "prompt": {"distribution": "fixed", "tokens": 8},
-                        "output": {"distribution": "fixed", "tokens": 4},
-                    }
-                ]
-            },
-        }
-    )
+    cfg: dict[str, Any] = {
+        "schema_version": 1,
+        "experiment": "driver-test",
+        "seed": 7,
+        "server": {"kind": "mock", "endpoint": "http://test/v1", "model": "mock"},
+        "load": base,
+        "workload": {
+            "classes": [
+                {
+                    "name": "c",
+                    "prompt": {"distribution": "fixed", "tokens": 8},
+                    "output": {"distribution": "fixed", "tokens": 4},
+                }
+            ]
+        },
+    }
+    if gateway is not None:
+        cfg["gateway"] = gateway
+    return ExperimentConfig.model_validate(cfg)
 
 
 def spec(i: int, offset: float = 0.0) -> RequestSpec:
@@ -182,3 +183,23 @@ def test_empty_workload_yields_no_records(monkeypatch: pytest.MonkeyPatch) -> No
     opened = make_cfg(mode="open", requests=10)
     assert drive(closed, []) == []
     assert drive(opened, []) == []
+
+
+def test_driver_routes_through_the_gateway_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = fake_sender(monkeypatch, delay_s=0.01)
+    cfg = make_cfg(
+        mode="closed",
+        concurrency=5,
+        requests=30,
+        gateway={"enabled": True, "max_in_flight": 3},
+    )
+
+    records = drive(cfg, [spec(i) for i in range(30)])
+
+    assert len(records) == 30
+    assert state["peak"] <= 3  # the cap, not the worker count, bounds in-flight
+    assert all(r.ok for r in records)
+    assert all(r.sched_name == "fifo" for r in records)
+    assert all(r.client_lag_ns is None for r in records)
