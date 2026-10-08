@@ -197,3 +197,72 @@ def test_smoke_script_exit_code_over_a_real_socket(mock_url: str) -> None:
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     assert "0 unexplained failures, 0 usage mismatches" in result.stdout
     assert "ok         5/5" in result.stdout
+
+
+def test_benchmark_cli_over_a_real_socket(mock_url: str, tmp_path: Path) -> None:
+    """PRD §29: one command runs a complete benchmark end to end (config → parquet + summaries)."""
+    try:
+        PromptBuilder.default()
+    except (RuntimeError, OSError) as e:
+        pytest.skip(f"tokenizer unavailable: {e}")
+
+    import json
+
+    import pyarrow.parquet as pq
+    import yaml
+
+    from llmserve import cli
+
+    cfg_path = tmp_path / "bench.yaml"
+    cfg_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "experiment": "sock-bench",
+                "seed": 7,
+                "repetitions": 1,
+                "measurement": {"warmup": {"requests": 0}},
+                # Deliberately unreachable: --endpoint must win and be recorded in metadata.
+                "server": {"kind": "mock", "endpoint": "http://localhost:9/v1", "model": "mock"},
+                "load": {"mode": "closed", "concurrency": 2, "requests": 20},
+                "workload": {
+                    "classes": [
+                        {
+                            "name": "c",
+                            "prompt": {"distribution": "fixed", "tokens": 16},
+                            "output": {"distribution": "fixed", "tokens": 4},
+                        }
+                    ]
+                },
+            }
+        )
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(
+            [
+                "benchmark",
+                str(cfg_path),
+                "-o",
+                str(tmp_path / "out"),
+                "--endpoint",
+                f"{mock_url}/v1",
+                "--allow-dirty",
+            ]
+        )
+    assert exc.value.code == 0
+
+    run_dirs = list((tmp_path / "out").glob("sock-bench/*"))
+    assert len(run_dirs) == 1
+    run_dir = run_dirs[0]
+    assert (run_dir / "config.resolved.yaml").is_file()
+    assert (run_dir / "metadata.json").is_file()
+    table = pq.read_table(run_dir / "rep-00" / "requests.parquet")
+    assert table.num_rows == 20
+    assert set(table.column("status").to_pylist()) == {"ok"}
+    md = json.loads((run_dir / "metadata.json").read_text())
+    assert md["server"]["endpoint"] == f"{mock_url}/v1"
+    assert md["backend_version"]["value"] is not None
+    summary = json.loads((run_dir / "summary.json").read_text())
+    assert summary["repetitions"] == 1
+    assert summary["invalid"] is False

@@ -55,7 +55,7 @@ class EnvReport:
         return "; ".join(self.checks)
 
 
-def _base_url(endpoint: str) -> str:
+def base_url(endpoint: str) -> str:
     """`http://host:8001/v1` → `http://host:8001` (health and version are served at the root)."""
     base = endpoint.rstrip("/")
     return base[: -len("/v1")] if base.endswith("/v1") else base
@@ -75,7 +75,7 @@ async def check_server(
     """
     caps = capabilities(cfg.server.kind)
     target = endpoint or cfg.server.endpoint
-    base = _base_url(target)
+    base = base_url(target)
     failures: list[str] = []
     checks: list[str] = []
     version: str | None = None
@@ -264,7 +264,7 @@ def _check_gpu(caps: Capabilities, failures: list[str], checks: list[str]) -> bo
     if not caps.gpu_metrics:
         checks.append("GPU check skipped (backend has no GPU metrics)")
         return None
-    util = _settled_gpu_utilization()
+    util = settled_gpu_utilization()
     if util is None:
         checks.append("GPU check skipped (NVML unavailable)")
         return None
@@ -275,7 +275,7 @@ def _check_gpu(caps: Capabilities, failures: list[str], checks: list[str]) -> bo
     return True
 
 
-def _settled_gpu_utilization() -> float | None:
+def settled_gpu_utilization() -> float | None:
     """Wait for finished-request traffic to age out of NVML's window, then take the worst sample.
 
     Sampled immediately after a request, NVML still reports that request's traffic (measured on
