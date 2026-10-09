@@ -20,8 +20,10 @@ import pytest
 import yaml
 
 from llmserve import cli
+from llmserve.client.capabilities import capabilities
 from llmserve.config.loader import config_hash, load_config
 from llmserve.config.schema import ExperimentConfig
+from llmserve.metrics.gpu import GPU_SCHEMA, GpuSample
 from llmserve.metrics.records import CHUNK_SCHEMA, REQUEST_SCHEMA
 from llmserve.mock import DelayModel, MockEngine, create_app
 from llmserve.runner import experiment
@@ -81,6 +83,34 @@ class _StubTokenizer:
 def make_builder() -> PromptBuilder:
     corpus = np.random.default_rng(7).integers(1, 1000, size=5000).astype(np.int64)
     return PromptBuilder(_StubTokenizer(), corpus)
+
+
+def fake_gpu_sample(gpu_idx: int, t_ns: int) -> GpuSample:
+    """A stand-in NVML reading, injected in place of `metrics.gpu._read_sample`."""
+    return GpuSample(
+        t_ns=t_ns,
+        gpu_idx=gpu_idx,
+        util_pct=33.0,
+        mem_used=1.0,
+        mem_total=2.0,
+        power_w=25.0,
+        temp_c=39.0,
+        sm_clock=1590.0,
+        mem_clock=5001.0,
+    )
+
+
+def with_fake_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One visible GPU at 33% utilization, and a mock told it has GPU metrics."""
+    from dataclasses import replace
+
+    from llmserve.metrics import gpu as gpu_mod
+
+    monkeypatch.setattr(gpu_mod, "_gpu_count", lambda: 1)
+    monkeypatch.setattr(gpu_mod, "_read_sample", fake_gpu_sample)
+    monkeypatch.setattr(
+        experiment, "capabilities", lambda kind: replace(capabilities(kind), gpu_metrics=True)
+    )
 
 
 def make_cfg(*, open_loop: bool = False) -> ExperimentConfig:
@@ -193,8 +223,7 @@ def test_closed_benchmark_end_to_end(tmp_path: Path) -> None:
         "requests": 8,
         "ok": 8,
         "gpu_util_pct": None,  # no NVML on this host
-        "server_idle": None,
-        "note": "server-metrics idle wait lands with the samplers",
+        "server_idle": None,  # the mock gains /metrics with the simulator (item 4)
     }
     assert md["samplers"]["active"] == []
 
@@ -210,6 +239,31 @@ def test_closed_benchmark_end_to_end(tmp_path: Path) -> None:
         assert rep_summary["throughput"] is not None
         assert rep_summary["throughput"]["req_s"] > 0
     assert json.loads((run_dir / "summary.json").read_text())["repetitions"] == 2
+
+
+def test_gpu_sampler_runs_and_is_recorded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A fake GPU plus a mock told it has GPU metrics: the sampler must produce gpu.parquet for
+    # every rep and say so in metadata — no NVML and no backend honesty required.
+    with_fake_gpu(monkeypatch)
+
+    run_dir, _ = run_in_process(make_cfg(), tmp_path, allow_dirty=True)
+
+    for rep in range(2):
+        table = pq.read_table(run_dir / f"rep-{rep:02d}" / "gpu.parquet")
+        assert table.column_names == GPU_SCHEMA.names
+        assert table.num_rows >= 1
+        assert set(table.column("util_pct").to_pylist()) == {33.0}
+        events = (run_dir / f"rep-{rep:02d}" / "events.jsonl").read_text()
+        assert events == ""  # a healthy sampler produces no events
+        assert not (run_dir / f"rep-{rep:02d}" / "server.parquet").exists()  # no /metrics yet
+    md = json.loads((run_dir / "metadata.json").read_text())
+    assert md["samplers"] == {
+        "active": ["gpu"],  # the mock still has no /metrics endpoint to poll
+        "gpu_hz": 10,
+        "server_hz": 2,
+        "dcgm": "auto",
+        "errors": {},
+    }
 
 
 def test_open_benchmark_trims_the_steady_window(tmp_path: Path) -> None:

@@ -238,8 +238,10 @@ class Warmup(_Model):
 
 
 class Samplers(_Model):
-    gpu_hz: PositiveFloat = 10
-    server_hz: PositiveFloat = 2
+    gpu_hz: NonNegativeFloat = 10
+    """NVML sampling rate; 0 disables the GPU sampler."""
+    server_hz: NonNegativeFloat = 2
+    """`/metrics` scrape rate; 0 disables the server sampler."""
     dcgm: Literal["auto", "on", "off"] = "auto"
 
 

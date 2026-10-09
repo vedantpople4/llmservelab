@@ -5,8 +5,8 @@ omitted — "present but null" is what makes the exit check's field-by-field com
 
 Captured here: identity (run/config/git), the machine (host, platform, Python), the GPU (NVML,
 best-effort), the resolved server/gateway/measurement settings, the seed's child keys, the clock
-anchor (ADR-0006), which samplers were active (item 7 adds some; their absence is recorded), and
-the warm-up's outcome. vLLM's launch args and the docker-side sizing flags are deployment facts
+anchor (ADR-0006), which samplers ran (with their requested rates and any failure), and the
+warm-up's outcome. vLLM's launch args and the docker-side sizing flags are deployment facts
 this process does not own, so they are null until the harness launches the server itself.
 """
 
@@ -89,8 +89,13 @@ def build_metadata(
     finished_utc: str,
     warmup: dict[str, Any],
     backend_version: dict[str, Any],
+    samplers: dict[str, Any],
 ) -> dict[str, Any]:
-    """Assemble `metadata.json`. `endpoint` is the one actually driven (CLI `--endpoint`)."""
+    """Assemble `metadata.json`. `endpoint` is the one actually driven (CLI `--endpoint`).
+
+    `samplers` comes from the run (`active`, requested rates, and any `errors`), so this
+    function only places it.
+    """
     return {
         "run_id": run_id,
         "experiment": cfg.experiment,
@@ -155,11 +160,5 @@ def build_metadata(
         "warmup": warmup,
         "clock_anchor_ns": clock_anchor_ns,
         "monotonic_clock": "time.perf_counter_ns, relative to run start (ADR-0006)",
-        "samplers": {
-            "active": [],
-            "gpu_hz": cfg.measurement.samplers.gpu_hz,
-            "server_hz": cfg.measurement.samplers.server_hz,
-            "dcgm": cfg.measurement.samplers.dcgm,
-            "note": "gpu/server samplers land with Phase 2 item 7; none were active here",
-        },
+        "samplers": samplers,
     }
