@@ -4,6 +4,7 @@ import json
 import httpx
 
 from llmserve.client.sse import SseParser
+from llmserve.metrics.server import parse_prometheus, sample_from
 from llmserve.mock import DelayModel, MockEngine, create_app
 
 
@@ -159,3 +160,45 @@ def test_unknown_request_fields_are_ignored() -> None:
         assert r.status_code == 200
 
     asyncio.run(run())
+
+
+def test_single_token_stream_still_finishes_with_length() -> None:
+    # One token is both the first and the last chunk: finish_reason must not be lost (item 4).
+    async def run() -> None:
+        async with client() as c:
+            r = await c.post(
+                "/v1/completions",
+                json={
+                    "prompt": [1],
+                    "max_tokens": 1,
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                },
+            )
+        parser = SseParser()
+        events = parser.feed(r.content)
+        parser.close()
+        payloads = [json.loads(e.data) for e in events if e.data != "[DONE]"]
+        chunks = [p for p in payloads if p["choices"]]
+        assert len(chunks) == 1
+        assert chunks[0]["choices"][0]["finish_reason"] == "length"
+        usage = [p for p in payloads if not p["choices"] and "usage" in p]
+        assert usage[0]["usage"] == {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+
+    asyncio.run(run())
+
+
+def test_metrics_endpoint_serves_every_sampler_series() -> None:
+    async def run() -> dict[str, float]:
+        async with client() as c:
+            r = await c.post("/v1/completions", json={"prompt": [7, 8, 9], "max_tokens": 2})
+            assert r.status_code == 200  # non-stream: counted, not simulated
+            m = await c.get("/metrics")
+        assert m.status_code == 200
+        return parse_prometheus(m.text)
+
+    sample = sample_from(asyncio.run(run()), t_ns=0)
+    assert sample.prompt_tokens_total == 3
+    assert sample.generation_tokens_total == 2
+    assert sample.running == 0  # delay model: no internal queue or KV, so both are structurally 0
+    assert sample.kv_usage == 0.0

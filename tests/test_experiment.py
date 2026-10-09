@@ -25,7 +25,8 @@ from llmserve.config.loader import config_hash, load_config
 from llmserve.config.schema import ExperimentConfig
 from llmserve.metrics.gpu import GPU_SCHEMA, GpuSample
 from llmserve.metrics.records import CHUNK_SCHEMA, REQUEST_SCHEMA
-from llmserve.mock import DelayModel, MockEngine, create_app
+from llmserve.metrics.server import SERVER_SCHEMA
+from llmserve.mock import CbParams, ContinuousBatchEngine, DelayModel, MockEngine, create_app
 from llmserve.runner import experiment
 from llmserve.runner.experiment import DirtyTreeError, run_experiment
 from llmserve.workload.generator import load_workload, materialize, save_workload
@@ -147,7 +148,8 @@ def make_cfg(*, open_loop: bool = False) -> ExperimentConfig:
 
 def run_in_process(cfg: ExperimentConfig, tmp_path: Path, **kwargs: Any) -> Any:
     builder = kwargs.pop("builder", None) or make_builder()
-    app = create_app(MockEngine(delay=DelayModel.instant()))
+    engine = kwargs.pop("engine", None) or MockEngine(delay=DelayModel.instant())
+    app = create_app(engine)
 
     async def run() -> Any:
         transport = httpx.ASGITransport(app=app)
@@ -223,9 +225,24 @@ def test_closed_benchmark_end_to_end(tmp_path: Path) -> None:
         "requests": 8,
         "ok": 8,
         "gpu_util_pct": None,  # no NVML on this host
-        "server_idle": None,  # the mock gains /metrics with the simulator (item 4)
+        "server_idle": True,  # the mock's /metrics reported an empty engine after warm-up
     }
-    assert md["samplers"]["active"] == []
+    # The mock has no GPU but does serve /metrics: exactly one sampler ran, none failed.
+    assert md["samplers"] == {
+        "active": ["server"],
+        "gpu_hz": 10,
+        "server_hz": 2,
+        "dcgm": "auto",
+        "errors": {},
+    }
+    # events.jsonl exists for every rep even when nothing happened (plan §4 layout).
+    for rep in range(2):
+        rep_path = run_dir / f"rep-{rep:02d}"
+        assert (rep_path / "events.jsonl").is_file()
+        assert not (rep_path / "gpu.parquet").exists()  # never wanted (mock has no GPU)
+        server = pq.read_table(rep_path / "server.parquet")
+        assert server.column_names == SERVER_SCHEMA.names
+        assert server.num_rows >= 1  # the validating scrape alone guarantees a row
 
     # --- summaries ---
     assert cross["repetitions"] == 2
@@ -255,15 +272,41 @@ def test_gpu_sampler_runs_and_is_recorded(tmp_path: Path, monkeypatch: pytest.Mo
         assert set(table.column("util_pct").to_pylist()) == {33.0}
         events = (run_dir / f"rep-{rep:02d}" / "events.jsonl").read_text()
         assert events == ""  # a healthy sampler produces no events
-        assert not (run_dir / f"rep-{rep:02d}" / "server.parquet").exists()  # no /metrics yet
     md = json.loads((run_dir / "metadata.json").read_text())
     assert md["samplers"] == {
-        "active": ["gpu"],  # the mock still has no /metrics endpoint to poll
+        "active": ["gpu", "server"],  # both are fed: a fake GPU and the mock's /metrics
         "gpu_hz": 10,
         "server_hz": 2,
         "dcgm": "auto",
         "errors": {},
     }
+
+
+def test_simulator_run_with_both_samplers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The whole Phase 2 measurement path against the continuous-batching simulator: every rep
+    # flushes gpu.parquet and server.parquet, warm-up sees an idle engine, nothing fails.
+    with_fake_gpu(monkeypatch)
+    engine = ContinuousBatchEngine(
+        params=CbParams(alpha_s=0.001, beta_s=0.0, gamma_s=0.0, delta_s=0.0)
+    )
+
+    run_dir, cross = run_in_process(
+        make_cfg(), tmp_path, engine=engine, allow_dirty=True, endpoint="http://test/v1"
+    )
+
+    assert cross["success_rate"]["mean"] == 1.0  # the simulator served every request to length
+    assert cross["invalid"] is False
+    md = json.loads((run_dir / "metadata.json").read_text())
+    assert md["samplers"]["active"] == ["gpu", "server"]
+    assert md["samplers"]["errors"] == {}
+    assert md["warmup"]["server_idle"] is True  # the simulator drained before the settle
+    for rep in range(2):
+        rep_path = run_dir / f"rep-{rep:02d}"
+        gpu = pq.read_table(rep_path / "gpu.parquet")
+        server = pq.read_table(rep_path / "server.parquet")
+        assert gpu.num_rows >= 1 and server.num_rows >= 1
+        assert server.column_names == SERVER_SCHEMA.names
+        assert (rep_path / "events.jsonl").read_text() == ""
 
 
 def test_open_benchmark_trims_the_steady_window(tmp_path: Path) -> None:

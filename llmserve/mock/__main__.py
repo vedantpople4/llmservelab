@@ -6,8 +6,15 @@ import argparse
 
 import uvicorn
 
-from llmserve.mock.engine import DelayModel, MockEngine
-from llmserve.mock.server import create_app
+from llmserve.mock.engine import CbParams, ContinuousBatchEngine, DelayModel, MockEngine
+from llmserve.mock.server import Engine, create_app
+
+
+def build_engine(args: argparse.Namespace) -> Engine:
+    if args.engine == "cb":
+        params = CbParams.instant() if args.instant else CbParams()
+        return ContinuousBatchEngine(model=args.model, params=params)
+    return MockEngine(model=args.model, delay=DelayModel.instant() if args.instant else None)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -16,13 +23,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--model", default="mock")
     parser.add_argument(
+        "--engine",
+        choices=("delay", "cb"),
+        default="delay",
+        help="delay = Phase 1 delay model (default); cb = continuous-batching simulator",
+    )
+    parser.add_argument(
         "--instant",
         action="store_true",
         help="zero delays (harness-overhead measurements and fast tests)",
     )
     args = parser.parse_args(argv)
-    engine = MockEngine(model=args.model, delay=DelayModel.instant() if args.instant else None)
-    uvicorn.run(create_app(engine), host=args.host, port=args.port, log_level="warning")
+    uvicorn.run(create_app(build_engine(args)), host=args.host, port=args.port, log_level="warning")
 
 
 if __name__ == "__main__":
