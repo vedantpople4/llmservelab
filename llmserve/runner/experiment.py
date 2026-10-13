@@ -17,6 +17,10 @@ that rep's `events.jsonl`; a run is never failed for a missing metric (ADR-0010)
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import os
+import platform
+import sys
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -78,10 +82,28 @@ async def run_experiment(
     run_dir.mkdir(parents=True)  # a same-second same-config rerun collides loudly, not silently
     storage.write_config(cfg, run_dir / "config.resolved.yaml")
 
+    progress(
+        f"run {run_id}: [{cfg.experiment}] {cfg.server.kind} → {target} · "
+        f"{cfg.load.mode} load · {cfg.repetitions} rep(s) · seed {cfg.seed} · "
+        f"git {sha or 'unknown'}{' (dirty)' if dirty else ''}"
+    )
+    for line in _startup_lines():
+        progress(line)
+
     own_client = client is None
     if client is None:
         client = httpx.AsyncClient()
     try:
+        samplers = _Samplers(
+            cfg,
+            caps=caps,
+            clock=clock,
+            client=client,
+            target=target,
+            kind=cfg.server.kind,
+            progress=progress,
+        )
+        progress(samplers.plan())
         warmup = await _warmup(
             cfg,
             client=client,
@@ -93,7 +115,6 @@ async def run_experiment(
             progress=progress,
         )
         summaries: list[dict[str, Any]] = []
-        samplers = _Samplers(cfg, caps=caps, clock=clock, client=client, target=target)
         for rep in range(cfg.repetitions):
             workload = materialize(cfg, rep=rep, builder=builder)
             rep_path = storage.rep_dir(run_dir, rep)
@@ -115,7 +136,7 @@ async def run_experiment(
                     token_counter=token_counter,
                 )
             finally:
-                await samplers.stop(gpu, server, events, rep_path)  # flush even on a crash
+                counts = await samplers.stop(gpu, server, events, rep_path)  # flush on a crash too
             window = window_of(records, cfg, t0_ns=t0_ns)
             summary = summarize(records, rep=rep, window=window)
             storage.write_requests(rep_path / "requests.parquet", records, run_id=run_id, rep=rep)
@@ -125,7 +146,9 @@ async def run_experiment(
             note = " (INVALID: >1% failures)" if summary["invalid"] else ""
             progress(
                 f"rep {rep + 1}/{cfg.repetitions}: "
-                f"{summary['n_ok']}/{summary['n_requests']} ok{note}"
+                f"{summary['n_ok']}/{summary['n_requests']} ok{note} · "
+                f"samplers gpu {counts['gpu']} / server {counts['server']} rows · "
+                f"{counts['events']} event(s)"
             )
 
         cross = aggregate(summaries)
@@ -176,17 +199,39 @@ class _Samplers:
         clock: RunClock,
         client: httpx.AsyncClient,
         target: str,
+        kind: str,
+        progress: Callable[[str], None],
     ) -> None:
         sampler_cfg = cfg.measurement.samplers
         self.gpu_hz = sampler_cfg.gpu_hz
         self.server_hz = sampler_cfg.server_hz
         self._gpu_on = sampler_cfg.gpu_hz > 0 and caps.gpu_metrics
         self._server_on = sampler_cfg.server_hz > 0 and caps.metrics_endpoint
+        self._gpu_capable = caps.gpu_metrics
+        self._metrics_capable = caps.metrics_endpoint
+        self._kind = kind
         self._clock = clock
         self._client = client
         self._base = base_url(target)
+        self._progress = progress
         self.active: list[str] = []
         self.errors: dict[str, str] = {}
+
+    def plan(self) -> str:
+        """One line saying what will sample, or why not — printed before the warm-up."""
+        if self.gpu_hz <= 0:
+            gpu = "off (gpu_hz=0)"
+        elif not self._gpu_capable:
+            gpu = f"off ({self._kind} has no gpu_metrics)"
+        else:
+            gpu = f"{self.gpu_hz:g} Hz (NVML)"
+        if self.server_hz <= 0:
+            server = "off (server_hz=0)"
+        elif not self._metrics_capable:
+            server = f"off ({self._kind} has no /metrics)"
+        else:
+            server = f"{self.server_hz:g} Hz ({self._base}/metrics)"
+        return f"samplers: gpu {gpu} · server {server}"
 
     async def start(
         self,
@@ -225,27 +270,47 @@ class _Samplers:
         server: ServerSampler | None,
         events: list[dict[str, Any]],
         rep_path: Path,
-    ) -> None:
-        """Flush both samplers into the repetition directory, then its `events.jsonl`."""
+    ) -> dict[str, int]:
+        """Flush both samplers into the repetition directory; returns `{"gpu", "server", "events"}`
+        row counts for the repetition's progress line."""
+        counts = {"gpu": 0, "server": 0, "events": 0}
         if gpu is not None:
             gpu_samples = gpu.stop()
             storage.write_gpu(rep_path / "gpu.parquet", gpu_samples)
+            counts["gpu"] = len(gpu_samples)
             if not gpu_samples:
                 self._gpu_on = False
                 self._record("gpu", "NVML returned no samples during the run", events)
         if server is not None:
             server_samples = await server.stop()
             storage.write_server(rep_path / "server.parquet", server_samples)
+            counts["server"] = len(server_samples)
             if server.error:
                 self._server_on = False
                 self._record("server", server.error, events)
         storage.write_events(rep_path / "events.jsonl", events)
+        counts["events"] = len(events)  # sampler failures land here during the flush
+        return counts
 
     def _record(self, name: str, message: str, events: list[dict[str, Any]]) -> None:
         self.errors[name] = message
+        self._progress(f"sampler {name} stopped for the rest of the run: {message}")
         events.append(
             {"t_ns": self._clock(), "kind": "sampler_error", "sampler": name, "error": message}
         )
+
+
+def _startup_lines() -> list[str]:
+    """Interpreter context for the run log: which Python ran the harness, and which
+    `sitecustomize` module Python tried to import at startup (a failing one — e.g. a missing
+    dependency — prints `Error in sitecustomize` before any of our code runs)."""
+    pythonpath = os.environ.get("PYTHONPATH")
+    header = f"python {platform.python_version()} @ {sys.executable}"
+    lines = [header + (f" · PYTHONPATH={pythonpath}" if pythonpath else "")]
+    spec = importlib.util.find_spec("sitecustomize")
+    if spec is not None and spec.origin:
+        lines.append(f"sitecustomize: {spec.origin}")
+    return lines
 
 
 async def _warmup(
@@ -300,10 +365,13 @@ async def _warmup(
         hz=cfg.measurement.samplers.server_hz,
     )
     util = _settle(timeout_s)
+    ok_n = sum(1 for r in records if r.ok)
+    gpu_txt = f"{util:.0f}%" if util is not None else "n/a (no NVML)"
+    progress(f"warm-up done: {ok_n}/{requests_n} ok · server idle {server_idle} · gpu {gpu_txt}")
     return {
         "performed": True,
         "requests": requests_n,
-        "ok": sum(1 for r in records if r.ok),
+        "ok": ok_n,
         "gpu_util_pct": util,
         "server_idle": server_idle,
     }
