@@ -282,6 +282,32 @@ def test_gpu_sampler_runs_and_is_recorded(tmp_path: Path, monkeypatch: pytest.Mo
     }
 
 
+def test_progress_lines_describe_the_run(tmp_path: Path) -> None:
+    # Every stage narrates itself: run header + interpreter context (which Python, which
+    # sitecustomize), the sampler plan, the warm-up settle verdict, per-rep status with
+    # sampler row counts — the log a GPU run leaves behind when nobody watches it.
+    lines: list[str] = []
+    run_dir, _ = run_in_process(
+        make_cfg(),
+        tmp_path,
+        allow_dirty=True,
+        endpoint="http://test/v1",
+        progress=lines.append,
+    )
+
+    joined = "\n".join(lines)
+    assert f"run {run_dir.name}: [bench-it] mock → http://test/v1 · closed load" in joined
+    assert "2 rep(s) · seed 42 · git " in joined
+    assert "python " in joined and " @" in joined  # which interpreter ran the harness
+    plan = "samplers: gpu off (mock has no gpu_metrics) · server 2 Hz (http://test/metrics)"
+    assert plan in joined
+    assert "warm-up: 8 requests (discarded)" in joined
+    assert "warm-up done: 8/8 ok · server idle True · gpu n/a (no NVML)" in joined
+    assert "rep 1/2: 40/40 ok · samplers gpu 0 / server " in joined
+    assert "rep 2/2: 40/40 ok" in joined
+    assert "0 event(s)" in joined
+
+
 def test_simulator_run_with_both_samplers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The whole Phase 2 measurement path against the continuous-batching simulator: every rep
     # flushes gpu.parquet and server.parquet, warm-up sees an idle engine, nothing fails.
