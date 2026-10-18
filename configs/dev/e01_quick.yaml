@@ -1,0 +1,28 @@
+# E01 shape, cut down to check the Colab notebook end to end in a few minutes.
+# Not a recorded result: the measured run is configs/baseline/e01.yaml.
+schema_version: 1
+experiment: e01-quick
+description: Quick Colab check of the E01 pipeline (1 rep, 30 requests).
+seed: 42
+repetitions: 1
+
+server:
+  kind: vllm
+  endpoint: http://localhost:8000/v1
+  model: Qwen/Qwen2.5-7B-Instruct-AWQ
+  model_revision: null
+  prefix_caching: false
+
+load:
+  mode: closed
+  concurrency: 1
+  requests: 30
+
+workload:
+  classes:
+    - name: p128_o128
+      prompt: {distribution: fixed, tokens: 128}
+      output: {distribution: fixed, tokens: 128}
+
+measurement:
+  warmup: {requests: 5, settle_timeout_s: 30}

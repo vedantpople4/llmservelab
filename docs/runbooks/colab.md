@@ -7,7 +7,8 @@ notebook cells differ only in paths, GPU selection and how results survive the s
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/vedantpople4/llmservelab/blob/main/notebooks/colab.ipynb)
 
-The badge opens [`notebooks/colab.ipynb`](../../notebooks/colab.ipynb), which holds the cells below. Keep the two in sync.
+The badge opens [`notebooks/colab.ipynb`](../../notebooks/colab.ipynb). The notebook is the
+source of truth for the commands; this runbook explains them.
 
 **Status:** authored, not yet verified end to end on Colab. The vLLM bring-up observations in
 the Kaggle runbook (V1 engine on Turing, AWQ on sm_75, the bf16 → fp16 downgrade) were made on
@@ -23,136 +24,94 @@ so a mixed set can be spotted after the fact, but the rule is not to create one.
 
 ## One-time setup
 
-1. Open a new notebook at colab.research.google.com.
-2. **Runtime → Change runtime type → Hardware accelerator: T4 GPU.** Colab gives one T4, so
+1. **Runtime → Change runtime type → Hardware accelerator: T4 GPU.** Colab gives one T4, so
    `CUDA_VISIBLE_DEVICES` is not needed.
-3. If the repo is private, create a GitHub personal access token with read access to it.
-   A plain `git clone` of a private repo hangs on `Username for 'https://github.com':`.
+2. Optional: add an `HF_TOKEN` under Colab's **Secrets** panel (key icon) and grant the
+   notebook access. Weight downloads get faster and Hugging Face stops warning about
+   unauthenticated requests.
 
-## Notebook flow (five cells)
+Then **Runtime → Run all.** The first code cell asks for Google Drive access; grant it and
+the rest runs unattended.
 
-### Cell 1: environment
+## Parameters
 
-```python
-!git clone https://github.com/vedantpople4/llmservelab.git /content/llmservelab
-# private repo: !git clone https://<PAT>@github.com/vedantpople4/llmservelab.git /content/llmservelab
-%cd /content/llmservelab
-!nvidia-smi --query-gpu=name,memory.total --format=csv
-!pip install -q uv
-!uv sync --locked --extra dev --extra mock --extra gpu
+| Name | Default | Meaning |
+|---|---|---|
+| `QUICK` | `True` | `True`: 20 smoke requests and `configs/dev/e01_quick.yaml` (1 rep × 30 requests). Checks the pipeline in about 15 min. `False`: 100 smoke requests and `configs/baseline/e01.yaml` (5 reps × 200), the real exit checks. Only `QUICK = False` runs are recorded results. |
+| `REPO_REF` | `main` | Branch to clone. Point it at a PR branch to test that branch before merge. |
+
+## What each step does
+
+Every step runs through `run(step, cmd)` or `with timed(step):`. Each prints a start and end
+line with its wall time, appends a row to `timings.jsonl`, writes its output to
+`logs/<step>.log`, and then copies everything to Drive. A failing step still records its
+timing and saves before raising.
+
+| Step | Work | Quick | Full |
+|---|---|---|---|
+| `1_setup` | clone, `nvidia-smi`, install uv, `uv sync --locked` with the `gpu` extra | 3 to 6 min | same |
+| `2_server_start` | start vLLM with the §6 flags, wait for `/health` (first start downloads ~6 GB) | 4 to 10 min | same |
+| `2b_vllm_log_check` | grep `vllm.log` for the engine (V1/V0) and dtype lines | instant | same |
+| `3_env_check` | health, model, prefix caching off, GPU idle under 5% | ~30 s | same |
+| `3b_smoke` | sequential requests at 128 in / 128 out; `--skip-env-check` since `3_env_check` just ran | ~1.5 min | 5 to 8 min |
+| `4_benchmark` | `llmserve benchmark`: warm-up, reps, parquet, summaries, metadata | ~3 min | 50 to 80 min |
+
+These times are estimates for a T4 at 25 to 40 ms per output token. `timings.jsonl` holds
+the measured ones; update this table after the first verified run. The smoke step's summary
+line gives wall time per 100 requests, and a full benchmark takes about 10× that.
+
+`nvidia-smi` must say `Tesla T4`. Any other GPU (an L4, or an A100 on a paid tier) is a
+different SKU, and its numbers cannot sit next to T4 numbers.
+
+The vLLM flags must match `docker/compose.yml` and the Kaggle runbook exactly. Change all
+three together or none.
+
+## Where output goes
+
+```
+MyDrive/llmservelab/sessions/<UTC timestamp>/
+  logs/timings.jsonl      one row per step: step, started_utc, elapsed_s, status, quick, cmd
+  logs/<step>.log         full stdout and stderr of that step
+  vllm.log                the server log
+  results/<exp>/<run_id>/ the benchmark run directory (parquet, summaries, metadata.json)
 ```
 
-`nvidia-smi` must report `Tesla T4`. Anything else (an L4, an A100 on a paid tier) is a
-different SKU, and its numbers cannot sit next to T4 numbers. Change the runtime type and
-reconnect.
+Steps write to local disk (`/content/logs`, `/content/vllm.log`, `results/`) and copy to
+Drive only between steps, so Drive I/O never overlaps a measurement. A disconnect loses at
+most the step that was running.
 
-Use `%cd`, not `!cd`. Each `!` line runs in its own shell, so `!cd` changes nothing.
+## Warnings
 
-`uv sync --locked` installs into `.venv/`, isolated from Colab's preinstalled torch and
-transformers. vLLM comes only from the locked `gpu` extra; a one-off `uv pip install vllm`
-leaves it undeclared and `uv run vllm` fails with `Failed to spawn: vllm`.
+The setup cell sets `PYTHONWARNINGS=ignore::DeprecationWarning,ignore::FutureWarning`,
+`HF_HUB_DISABLE_PROGRESS_BARS=1`, `TOKENIZERS_PARALLELISM=false` and `UV_NO_PROGRESS=1`.
+These hide library noise only.
 
-### Cell 2: server (§6 flags)
+Never hide these. They describe the measurement:
 
-```python
-import os, subprocess, time, urllib.request
-
-server = subprocess.Popen(
-    [
-        "uv",
-        "run",
-        "vllm",
-        "serve",
-        "Qwen/Qwen2.5-7B-Instruct-AWQ",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "8000",
-        "--max-model-len",
-        "10240",
-        "--gpu-memory-utilization",
-        "0.90",
-        "--dtype",
-        "float16",
-        "--no-enable-prefix-caching",
-        "--max-num-seqs",
-        "256",
-        "--disable-log-requests",
-    ],
-    stdout=open("/content/vllm.log", "w"),
-    stderr=subprocess.STDOUT,
-    env=os.environ.copy(),
-)
-
-for _ in range(180):  # first start downloads ~6 GB of weights
-    try:
-        urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=2)
-        print("vLLM healthy")
-        break
-    except Exception:
-        time.sleep(5)
-else:
-    print(open("/content/vllm.log").read()[-4000:])
-    raise RuntimeError("vLLM did not become healthy")
-```
-
-The flags must match `docker/compose.yml` and the Kaggle runbook exactly; change all three
-together or none.
-
-### Cell 3: env check and smoke (Phase 1 exit check)
-
-```python
-!uv run python -m llmserve.runner.env_check configs/baseline/e01.yaml
-!uv run python scripts/smoke.py configs/baseline/e01.yaml
-```
-
-`env_check` asserts health, the served model, prefix caching off (config plus an
-identical-prompt TTFT probe) and GPU utilization under 5%. Run nothing else on the GPU while
-the server is up. `smoke` exits 0 only with 100/100 `ok` and no usage mismatches.
-
-### Cell 4: benchmark (Phase 2 exit check, GPU half)
-
-```python
-!uv run llmserve benchmark configs/baseline/e01.yaml
-```
-
-The benchmark refuses a dirty working tree. A fresh clone is clean (`.venv/` and `results/`
-are gitignored). If you edit anything in the clone, commit and push it first; `--allow-dirty`
-exists for debugging, and a dirty run is not a recorded result.
-
-### Cell 5: save results
-
-```python
-from google.colab import drive
-drive.mount("/content/drive")
-!mkdir -p /content/drive/MyDrive/llmservelab
-!cp -r results /content/drive/MyDrive/llmservelab/
-!cp /content/vllm.log /content/drive/MyDrive/llmservelab/vllm-$(date +%Y%m%dT%H%M%S).log
-```
-
-Run this after every benchmark, not once at the end. `/content` is wiped on disconnect, and a
-disconnect can come without warning.
+- vLLM's engine line (`V1 engine` or `Falling back to V0`) and the bf16 → fp16 downgrade.
+  Keep `VLLM_LOGGING_LEVEL` at its default; the log check needs the INFO lines.
+- Harness output: `env_check` failures, `INVALID: >1% failures`, `sampler ... stopped`.
+- `Error in sitecustomize`. It means the `.venv` imports something from the platform's
+  Python. Report it instead of hiding it.
 
 ## Session discipline
 
 - **Colab does not publish its free GPU quota**, and it varies with demand. Disconnect the
   runtime (**Runtime → Disconnect and delete runtime**) whenever you are not measuring.
-- **Idle sessions disconnect** after roughly 90 minutes without notebook interaction, and
-  sessions cap at about 12 hours. Split long suites into runs that each finish, and save,
-  well inside one session.
-- **A new session starts from Cell 1.** The weights download again (~6 GB). Pointing
-  `HF_HOME` at Drive avoids that, but reads from Drive are slower than local disk, so it
-  costs startup time. Never let it overlap a measured run.
+- **Keep the tab open during long runs.** A running cell usually keeps the session alive,
+  but a closed tab or sleeping laptop can drop it, and sessions cap at about 12 hours.
+- **A new session starts from setup.** `1_setup` and `2_server_start` cost about 10 minutes
+  of GPU time each session, so fit several runs into one session where you can.
 
 ## Traps
 
 | Trap | Consequence | Fix |
 |---|---|---|
-| Runtime left on CPU or a non-T4 GPU | vLLM fails, or numbers from the wrong SKU | Runtime → Change runtime type → T4 GPU; check `nvidia-smi` |
-| `!cd` instead of `%cd` | later cells run in `/content`, configs not found | `%cd /content/llmservelab` |
-| private repo | `git clone` hangs on a username prompt | clone with a PAT, or make the repo public |
+| runtime left on CPU or a non-T4 GPU | vLLM fails, or numbers from the wrong SKU | Runtime → Change runtime type → T4 GPU; check `1_setup.log` |
+| `REPO_REF` names a branch without `configs/dev/e01_quick.yaml` | `4_benchmark` fails: config not found | use `main` after this notebook's PR merges, or the PR branch before |
+| editing files in the clone | `llmserve benchmark` refuses a dirty tree | commit and push instead; `--allow-dirty` runs are not recorded results |
 | one-off `uv pip install vllm` | `Failed to spawn: vllm` | install only through `uv sync --locked --extra gpu` |
 | other GPU work while the server runs | `env_check` fails the idle check; results polluted | one job at a time on the GPU |
-| results only in `/content` | lost on disconnect | Cell 5 after every run |
+| `QUICK = True` results in a report | 1 rep × 30 requests is not a measurement | report only `QUICK = False` runs |
 | mixing Colab and Kaggle runs | host and driver become hidden variables | one platform per phase (see above) |
 | idle runtime left connected | free quota drains | disconnect when not measuring |
