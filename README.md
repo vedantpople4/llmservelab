@@ -19,6 +19,8 @@ that model-quality work doesn't cover.
   notebook (ADR-0011, [runbook](docs/runbooks/kaggle.md)). `docker/compose.yml` is authored but
   has never been executed.
 
+GPU runs: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/vedantpople4/llmservelab/blob/main/notebooks/colab.ipynb) ([runbook](docs/runbooks/colab.md)).
+
 See [docs/PLAN.md](docs/PLAN.md) and the detailed [implementation plan](docs/IMPLEMENTATION_PLAN.md).
 
 ## Setup
@@ -56,7 +58,7 @@ or in a Kaggle notebook per [the runbook](docs/runbooks/kaggle.md) — using
 | `llmserve/analysis` | Aggregation, statistics, plots |
 | `configs/` | Committed experiment configs; every figure maps to one |
 | `docker/` | vLLM compose file (pinned image, §6 flags) — GPU host only |
-| `docs/runbooks/` | Kaggle notebook runbook (free T4 route, ADR-0011) |
+| `docs/runbooks/` | Kaggle and [Colab](docs/runbooks/colab.md) notebook runbooks (free T4 routes, ADR-0011) |
 | `scripts/` | `smoke.py` (Phase 1 exit check), `envelope.py` (back-of-envelope model) |
 | `results/` | Raw run output (git-ignored) |
 | `docs/adr/` | Architecture decision records |
