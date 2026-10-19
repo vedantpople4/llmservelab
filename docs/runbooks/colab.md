@@ -66,6 +66,13 @@ different SKU, and its numbers cannot sit next to T4 numbers.
 The vLLM flags must match `docker/compose.yml` and the Kaggle runbook exactly. Change all
 three together or none.
 
+## Phase 3 suites
+
+Step 5b runs a suite from `configs/suites/` and writes to `MyDrive/llmservelab/results/`, a
+folder shared by all sessions, so an interrupted suite resumes in the next session. The order
+and session plan are in [the Phase 3 runbook](phase3.md). The server cell passes
+`--revision MODEL_REVISION`, which must equal `server.model_revision` in the configs.
+
 ## Where output goes
 
 ```

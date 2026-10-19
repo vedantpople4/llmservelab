@@ -12,3 +12,6 @@ dist/
 # Raw run output stays local; commit summaries deliberately.
 results/*
 !results/.gitkeep
+
+# Agent worktrees (Claude Code); never part of a run's provenance.
+.claude/worktrees/

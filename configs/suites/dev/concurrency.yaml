@@ -1,0 +1,18 @@
+# Mac rehearsal of concurrency-p128 against vllm-metal (ADR-0012). Never compared with T4 numbers.
+suite: dev-concurrency
+description: >-
+  concurrency-p128's shape on an M5 MacBook (vllm-metal, ~21 tok/s single stream): C in {1, 2, 4,
+  8}, one repetition, 24 to 40 requests, about 10 minutes in all. Exercises the suite runner and
+  the analysis pipeline before spending Colab time.
+base: ../../dev/e01_metal.yaml
+set:
+  repetitions: 1
+sweep:
+  field: load.concurrency
+  values: [1, 2, 4, 8]
+  label: "c{value:03d}"
+  set_per_value:
+    1: {load.requests: 24}
+    2: {load.requests: 24}
+    4: {load.requests: 32}
+    8: {load.requests: 40}

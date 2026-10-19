@@ -1,0 +1,19 @@
+# TPOT vs output length at concurrency 8 (plan Phase 3 item 2); input to the decode cost model.
+suite: output-length
+description: >-
+  Output length 16 to 1024 tokens with 128-token prompts at concurrency 8, for TPOT as the
+  context grows. 100 requests per point, 3 repetitions.
+base: ../baseline/e01.yaml
+set:
+  repetitions: 3
+  load.concurrency: 8
+  load.requests: 100
+  workload:
+    classes:
+      - name: output_sweep
+        prompt: {distribution: fixed, tokens: 128}
+        output: {distribution: fixed, tokens: 128}
+sweep:
+  field: workload.classes.0.output.tokens
+  values: [16, 64, 128, 256, 512, 1024]
+  label: "o{value:04d}"

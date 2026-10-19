@@ -382,6 +382,14 @@ Risks:
 
 ### Phase 2: Benchmark harness and mock server (2 weeks)
 
+*Status:* done (October 2026). Work items 1–10 are built: `llmserve benchmark` runs warm-up →
+repetitions → parquet → summaries → metadata against the mock, the continuous-batching
+simulator, vllm-metal on a Mac (ADR-0012) and vLLM on a T4 (Colab notebook,
+`notebooks/colab.ipynb`). Deferred to Phase 3 as known gaps: the harness-overhead test at
+C = 128 and 200 req/s (the current test checks client-lag P99 < 50 ms at light load), the
+200-request / 30 s integration sizes, a CI job that runs `llmserve benchmark` against a
+separately started mock, and a test asserting every PRD §16 metadata field.
+
 **Goal:** `llmserve benchmark <config>` runs the whole pipeline (warm-up → workload → storage →
 summary) against either the mock or vLLM, deterministically.
 
@@ -461,6 +469,13 @@ Risks:
   labeled `server.kind: mock` in metadata.
 
 ### Phase 3: Baseline characterization (2 weeks, GPU)
+
+*Status:* code complete (October 2026); T4 runs pending. Built: suites with a resumable runner
+(`llmserve suite`, `configs/suites/`), the run loader (`analysis/runs.py`), capacity detection,
+H1–H3 verdicts with pre-registered rules, plots, `llmserve report`, the cost model
+(`scheduler/estimators.py`) and mock calibration (`scripts/calibrate_mock.py`). Verified end to
+end on the Mac against vllm-metal (`llmserve report --dev`). Run order, session plan and the open
+E01–E07 budget decision: `docs/runbooks/phase3.md`.
 
 **Goal:** a Baseline Performance Report that tests H1 and H2 and provides the numbers that later
 phases depend on.

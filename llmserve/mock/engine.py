@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from collections import deque
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
+from typing import Any
 
 DEFAULT_KV_CAPACITY_TOKENS = 16384
 
@@ -149,6 +151,35 @@ class CbParams:
     def instant(cls) -> CbParams:
         """Zero step time: for unit tests (the capacities stay real)."""
         return cls(alpha_s=0.0, beta_s=0.0, gamma_s=0.0, delta_s=0.0)
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self), indent=2, sort_keys=True) + "\n"
+
+    @classmethod
+    def from_json(cls, text: str) -> CbParams:
+        """Parse a JSON object of fields; missing ones keep their defaults.
+
+        Unknown keys, wrong types, negative costs and non-positive capacities are errors: a
+        params file is external input, and a typo must not silently fall back to a default.
+        """
+        data: Any = json.loads(text)
+        if not isinstance(data, dict):
+            raise ValueError("CbParams JSON must be an object")
+        kinds = {f.name: f.type for f in fields(cls)}
+        unknown = sorted(set(data) - set(kinds))
+        if unknown:
+            raise ValueError(f"unknown CbParams field(s): {', '.join(unknown)}")
+        parsed: dict[str, Any] = {}
+        for name, value in data.items():
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                raise ValueError(f"CbParams.{name} must be a number, got {value!r}")
+            if kinds[name] == "int":
+                if not isinstance(value, int) or value <= 0:
+                    raise ValueError(f"CbParams.{name} must be a positive integer, got {value!r}")
+            elif value < 0:
+                raise ValueError(f"CbParams.{name} must be non-negative, got {value!r}")
+            parsed[name] = value if kinds[name] == "int" else float(value)
+        return cls(**parsed)
 
 
 @dataclass(eq=False)

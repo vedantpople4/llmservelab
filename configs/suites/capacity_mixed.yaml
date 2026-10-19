@@ -1,0 +1,17 @@
+# Capacity search for the mixed workload (plan Phase 3 item 2); defines rho = 1 for h2-mixed.
+suite: capacity-mixed
+description: >-
+  Capacity search for E07's mixed workload: Poisson arrivals at 0.25 to 3 req/s for 120 s
+  (warm-up 20 s, cool-down 10 s trimmed). Prefill of the long-context class dominates; the
+  envelope puts capacity near 1.5 req/s. One repetition: this locates the knee, it is not a
+  measurement.
+base: ../baseline/e07.yaml
+set:
+  repetitions: 1
+  load: {mode: open, arrival: {process: poisson}, duration_s: 120}
+  measurement.warmup_s: 20
+  measurement.cooldown_s: 10
+sweep:
+  field: load.arrival.rate
+  values: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
+  label: "r{value:.2f}"

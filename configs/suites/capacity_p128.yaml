@@ -1,0 +1,18 @@
+# Capacity search for 128/128 (plan Phase 3 item 2): the open-loop rate where queue wait grows
+# without bound. This defines rho = 1 for the workload.
+suite: capacity-p128
+description: >-
+  Capacity search for E01's 128/128 workload: Poisson arrivals at 2 to 16 req/s for 120 s
+  (warm-up 20 s, cool-down 10 s trimmed). The envelope predicts ~1,100 tok/s at batch 32, about
+  8 req/s, so the rates span well below to twice that. One repetition: this locates the knee,
+  it is not a measurement.
+base: ../baseline/e01.yaml
+set:
+  repetitions: 1
+  load: {mode: open, arrival: {process: poisson}, duration_s: 120}
+  measurement.warmup_s: 20
+  measurement.cooldown_s: 10
+sweep:
+  field: load.arrival.rate
+  values: [2, 4, 6, 8, 10, 12, 16]
+  label: "r{value:02d}"
