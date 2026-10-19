@@ -18,6 +18,11 @@ that model-quality work doesn't cover.
   0 failures, 0 usage mismatches. The real vLLM run is still pending: it happens in a Kaggle
   notebook (ADR-0011, [runbook](docs/runbooks/kaggle.md)). `docker/compose.yml` is authored but
   has never been executed.
+- **Phase 2 (benchmark harness):** done. `llmserve benchmark <config>` runs warm-up, N
+  repetitions, parquet output, per-rep and cross-rep summaries and full metadata against the
+  mock, vllm-metal on a Mac, or vLLM on a T4. Known gaps carried into Phase 3 are listed in the
+  implementation plan.
+- **Phase 3 (baseline characterization):** in progress.
 
 GPU runs: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/vedantpople4/llmservelab/blob/main/notebooks/colab.ipynb) ([runbook](docs/runbooks/colab.md)).
 

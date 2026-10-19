@@ -382,6 +382,14 @@ Risks:
 
 ### Phase 2: Benchmark harness and mock server (2 weeks)
 
+*Status:* done (October 2026). Work items 1–10 are built: `llmserve benchmark` runs warm-up →
+repetitions → parquet → summaries → metadata against the mock, the continuous-batching
+simulator, vllm-metal on a Mac (ADR-0012) and vLLM on a T4 (Colab notebook,
+`notebooks/colab.ipynb`). Deferred to Phase 3 as known gaps: the harness-overhead test at
+C = 128 and 200 req/s (the current test checks client-lag P99 < 50 ms at light load), the
+200-request / 30 s integration sizes, a CI job that runs `llmserve benchmark` against a
+separately started mock, and a test asserting every PRD §16 metadata field.
+
 **Goal:** `llmserve benchmark <config>` runs the whole pipeline (warm-up → workload → storage →
 summary) against either the mock or vLLM, deterministically.
 
