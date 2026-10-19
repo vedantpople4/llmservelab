@@ -1,0 +1,277 @@
+"""Verdicts for the Phase 3 hypotheses (plan Appendix B), each by a rule fixed before any data.
+
+A verdict is `supported`, `refuted`, `inconclusive` (the data exist but cannot decide), or
+`not-run` (an input suite or run is missing or has no usable points). Missing inputs never raise.
+
+**H1, saturation** (concurrency sweep, 128/128). Per swept C, across-rep means of
+`throughput.gen_toks_s` (T) and `latency.ttft_s.p99` (L).
+- plateau = the smallest swept C whose next swept point (a doubling on the power-of-2 sweep)
+  adds < 10% generated tok/s: `T(C_next) < 1.10 · T(C)`.
+- knee = the smallest swept C with `L(C) > 2 · L(C_min)`, where C_min is the smallest swept C
+  (C = 1 on the study sweep).
+- supported iff both occur inside the sweep and knee ≥ plateau (tail latency blows up only once
+  extra concurrency stops buying throughput, background.md §4); refuted iff both occur and
+  knee < plateau; inconclusive if either is absent or fewer than 3 points have both metrics.
+
+**H2, head-of-line blocking** (`h2-mixed` vs `h2-interactive`, open loop at equal ρ). TTFT of
+the ok, in-window requests of class `interactive`, pooled across reps. For q ∈ {95, 99}, the
+percentile bootstrap CI (`stats.bootstrap_percentile_diff`, B = 10,000, seed 0) of
+`pct_q(mixed) − pct_q(homogeneous)`.
+- supported iff the CI lower bound is > 0 for P95 or for P99;
+- refuted iff for both P95 and P99 the CI upper bound is < 10% of the homogeneous percentile
+  (any increase is smaller than 10%, with 95% confidence);
+- inconclusive otherwise, or when either condition has fewer than 20 interactive requests.
+P99 from fewer than 1,000 requests per condition is marked indicative (plan §5 rule 2).
+
+**H3, prefill cost** (prompt-length sweep). Per-request `(prompt_tokens_req, ttft_s)` over the
+ok, in-window requests of points run closed loop at C = 1 (other points are excluded: queueing
+would confound prefill). Fit `TTFT ≈ a + b·p + c·p²` (`estimators.fit_prefill`).
+- supported iff R² ≥ 0.95; refuted iff R² < 0.95; inconclusive with < 3 distinct lengths.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Literal
+
+import numpy as np
+import numpy.typing as npt
+import pandas as pd
+
+from llmserve.analysis.runs import Run
+from llmserve.analysis.stats import bootstrap_percentile_diff
+from llmserve.analysis.suites import SuiteRuns, sweep_table
+from llmserve.scheduler.estimators import PrefillFit, fit_prefill
+
+Status = Literal["supported", "refuted", "inconclusive", "not-run"]
+
+H1_THROUGHPUT = "throughput.gen_toks_s"
+H1_TAIL = "latency.ttft_s.p99"
+PLATEAU_GAIN = 0.10
+KNEE_FACTOR = 2.0
+H1_MIN_POINTS = 3
+
+H2_CLASS = "interactive"
+H2_QUANTILES = (95.0, 99.0)
+H2_EQUIVALENCE_MARGIN = 0.10
+H2_MIN_SAMPLES = 20
+P99_MIN_SAMPLES = 1000
+
+H3_MIN_R2 = 0.95
+
+STATEMENTS = {
+    "H1": "Throughput saturates with concurrency, and tail TTFT degrades sharply only at or "
+    "after that saturation point.",
+    "H2": "In a mixed workload, short interactive requests see worse tail TTFT than the same "
+    "requests in a homogeneous workload at equal load (head-of-line blocking).",
+    "H3": "At concurrency 1, TTFT is a quadratic in prompt length: TTFT ≈ a + b·p + c·p², "
+    "with R² ≥ 0.95.",
+}
+
+
+@dataclass(frozen=True)
+class Verdict:
+    id: str
+    statement: str
+    status: Status
+    summary: str
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+
+def _verdict(hid: str, status: Status, summary: str, **evidence: Any) -> Verdict:
+    return Verdict(hid, STATEMENTS[hid], status, summary, evidence)
+
+
+# --- H1 ---
+
+
+def h1(suite: SuiteRuns | None) -> Verdict:
+    if suite is None or not suite.points:
+        return _verdict("H1", "not-run", "The concurrency sweep has no usable runs.")
+    verdict = judge_h1(sweep_table(suite, (H1_THROUGHPUT, H1_TAIL)))
+    verdict.evidence["suite"] = suite.suite
+    return verdict
+
+
+def judge_h1(table: pd.DataFrame) -> Verdict:
+    """Apply the H1 rule to a `sweep_table` holding `H1_THROUGHPUT` and `H1_TAIL`."""
+    wide = table.pivot_table(index="value", columns="metric", values="mean", aggfunc="first")
+    if H1_THROUGHPUT not in wide or H1_TAIL not in wide:
+        return _verdict("H1", "inconclusive", "The sweep lacks throughput or P99 TTFT.")
+    wide = wide[[H1_THROUGHPUT, H1_TAIL]].dropna().sort_index()
+    cs = [float(c) for c in wide.index]
+    tput = [float(v) for v in wide[H1_THROUGHPUT]]
+    tail = [float(v) for v in wide[H1_TAIL]]
+    evidence: dict[str, Any] = {
+        "concurrency": cs,
+        "gen_toks_s": tput,
+        "ttft_p99_s": tail,
+        "plateau_c": None,
+        "knee_c": None,
+    }
+    if len(cs) < H1_MIN_POINTS:
+        return _verdict(
+            "H1", "inconclusive", f"Only {len(cs)} sweep points have both metrics.", **evidence
+        )
+    plateau = next(
+        (cs[i] for i in range(len(cs) - 1) if tput[i + 1] < (1 + PLATEAU_GAIN) * tput[i]), None
+    )
+    knee = next((c for c, v in zip(cs, tail, strict=True) if v > KNEE_FACTOR * tail[0]), None)
+    evidence.update(plateau_c=plateau, knee_c=knee, baseline_c=cs[0])
+    if plateau is None or knee is None:
+        missing = " and ".join(
+            name for name, v in (("throughput plateau", plateau), ("P99 knee", knee)) if v is None
+        )
+        return _verdict("H1", "inconclusive", f"No {missing} inside C ≤ {cs[-1]:g}.", **evidence)
+    if knee >= plateau:
+        return _verdict(
+            "H1",
+            "supported",
+            f"Throughput plateaus at C = {plateau:g} and P99 TTFT knees at C = {knee:g}.",
+            **evidence,
+        )
+    return _verdict(
+        "H1",
+        "refuted",
+        f"P99 TTFT knees at C = {knee:g}, before the throughput plateau at C = {plateau:g}.",
+        **evidence,
+    )
+
+
+# --- H2 ---
+
+
+def interactive_ttft(run: Run, workload_class: str = H2_CLASS) -> npt.NDArray[np.float64]:
+    """TTFT (s) of the ok, in-window requests of `workload_class`, pooled across reps."""
+    frame = run.requests()
+    if frame.empty:
+        return np.empty(0)
+    keep = frame["ok"] & frame["in_window"] & (frame["workload_class"] == workload_class)
+    values: npt.NDArray[np.float64] = frame.loc[keep, "ttft_s"].dropna().to_numpy(np.float64)
+    return values
+
+
+def h2(mixed: Run | None, homogeneous: Run | None) -> Verdict:
+    if mixed is None or homogeneous is None:
+        missing = [
+            n for n, r in (("h2-mixed", mixed), ("h2-interactive", homogeneous)) if r is None
+        ]
+        return _verdict("H2", "not-run", f"Missing run: {', '.join(missing)}.")
+    verdict = judge_h2(interactive_ttft(mixed), interactive_ttft(homogeneous))
+    verdict.evidence.update(mixed_run=mixed.run_id, homogeneous_run=homogeneous.run_id)
+    return verdict
+
+
+def judge_h2(mixed_ttft: npt.ArrayLike, homogeneous_ttft: npt.ArrayLike) -> Verdict:
+    a = np.asarray(mixed_ttft, dtype=np.float64)
+    b = np.asarray(homogeneous_ttft, dtype=np.float64)
+    evidence: dict[str, Any] = {"n_mixed": len(a), "n_homogeneous": len(b)}
+    if min(len(a), len(b)) < H2_MIN_SAMPLES:
+        return _verdict(
+            "H2",
+            "inconclusive",
+            f"Too few interactive requests ({len(a)} mixed, {len(b)} homogeneous; "
+            f"need {H2_MIN_SAMPLES} each).",
+            **evidence,
+        )
+    cis = {q: bootstrap_percentile_diff(a, b, q) for q in H2_QUANTILES}
+    for q, ci in cis.items():
+        evidence[f"p{q:g}"] = {
+            "mixed_s": ci.a,
+            "homogeneous_s": ci.b,
+            "diff_s": ci.diff,
+            "ci_lo_s": ci.lo,
+            "ci_hi_s": ci.hi,
+        }
+    evidence["p99_indicative"] = min(len(a), len(b)) < P99_MIN_SAMPLES
+    evidence["bootstrap"] = {"resamples": cis[95.0].resamples, "seed": cis[95.0].seed}
+    worse = [q for q, ci in cis.items() if ci.lo > 0]
+    if worse:
+        ci = cis[worse[0]]
+        return _verdict(
+            "H2",
+            "supported",
+            f"Interactive P{worse[0]:g} TTFT is {_pct(ci.diff, ci.b)} higher in the mixed "
+            f"workload (95% CI {ci.lo * 1e3:+.1f} to {ci.hi * 1e3:+.1f} ms).",
+            **evidence,
+        )
+    if all(ci.hi < H2_EQUIVALENCE_MARGIN * ci.b for ci in cis.values()):
+        return _verdict(
+            "H2",
+            "refuted",
+            "Mixing raises interactive P95 and P99 TTFT by less than 10% (95% CI upper bounds).",
+            **evidence,
+        )
+    return _verdict(
+        "H2",
+        "inconclusive",
+        "No significant P95/P99 increase, but the CIs do not exclude a ≥ 10% one.",
+        **evidence,
+    )
+
+
+def _pct(diff: float, base: float) -> str:
+    return f"{diff / base:+.0%}" if base > 0 else f"{diff * 1e3:+.1f} ms"
+
+
+# --- H3 ---
+
+
+def prefill_points(suite: SuiteRuns) -> pd.DataFrame:
+    """`(prompt_tokens, ttft_s)` of every ok, in-window request at closed-loop C = 1."""
+    frames = []
+    for point in suite.points:
+        load = point.run.config.load
+        if load.mode != "closed" or load.concurrency != 1:
+            continue
+        frame = point.run.requests()
+        if frame.empty:
+            continue
+        keep = frame[frame["ok"] & frame["in_window"]]
+        frames.append(
+            pd.DataFrame(
+                {
+                    "prompt_tokens": keep["prompt_tokens_req"].astype(float),
+                    "ttft_s": keep["ttft_s"].astype(float),
+                }
+            )
+        )
+    if not frames:
+        return pd.DataFrame(columns=["prompt_tokens", "ttft_s"])
+    return pd.concat(frames, ignore_index=True).dropna()
+
+
+def h3(suite: SuiteRuns | None) -> Verdict:
+    if suite is None or not suite.points:
+        return _verdict("H3", "not-run", "The prompt-length sweep has no usable runs.")
+    points = prefill_points(suite)
+    verdict = judge_h3(points["prompt_tokens"], points["ttft_s"])
+    verdict.evidence["suite"] = suite.suite
+    return verdict
+
+
+def judge_h3(prompt_tokens: npt.ArrayLike, ttft_s: npt.ArrayLike) -> Verdict:
+    p = np.asarray(prompt_tokens, dtype=np.float64)
+    distinct = len(np.unique(p[np.isfinite(p)]))
+    if distinct < 3:
+        return _verdict(
+            "H3",
+            "inconclusive",
+            f"Only {distinct} distinct prompt lengths at C = 1 (need 3).",
+            n=len(p),
+        )
+    fit = fit_prefill(p, ttft_s)
+    evidence = {"a": fit.a, "b": fit.b, "c": fit.c, "r2": fit.r2, "n": fit.n}
+    if fit.r2 >= H3_MIN_R2:
+        return _verdict("H3", "supported", f"Quadratic prefill fit R² = {fit.r2:.3f}.", **evidence)
+    return _verdict(
+        "H3", "refuted", f"Quadratic prefill fit R² = {fit.r2:.3f} < {H3_MIN_R2}.", **evidence
+    )
+
+
+def prefill_fit(verdict: Verdict) -> PrefillFit | None:
+    """The fit an H3 verdict was judged on, or None when there was none."""
+    e = verdict.evidence
+    if "r2" not in e:
+        return None
+    return PrefillFit(a=e["a"], b=e["b"], c=e["c"], r2=e["r2"], n=e["n"])
