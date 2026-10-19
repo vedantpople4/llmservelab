@@ -470,6 +470,13 @@ Risks:
 
 ### Phase 3: Baseline characterization (2 weeks, GPU)
 
+*Status:* code complete (October 2026); T4 runs pending. Built: suites with a resumable runner
+(`llmserve suite`, `configs/suites/`), the run loader (`analysis/runs.py`), capacity detection,
+H1–H3 verdicts with pre-registered rules, plots, `llmserve report`, the cost model
+(`scheduler/estimators.py`) and mock calibration (`scripts/calibrate_mock.py`). Verified end to
+end on the Mac against vllm-metal (`llmserve report --dev`). Run order, session plan and the open
+E01–E07 budget decision: `docs/runbooks/phase3.md`.
+
 **Goal:** a Baseline Performance Report that tests H1 and H2 and provides the numbers that later
 phases depend on.
 

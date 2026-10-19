@@ -22,7 +22,10 @@ that model-quality work doesn't cover.
   repetitions, parquet output, per-rep and cross-rep summaries and full metadata against the
   mock, vllm-metal on a Mac, or vLLM on a T4. Known gaps carried into Phase 3 are listed in the
   implementation plan.
-- **Phase 3 (baseline characterization):** in progress.
+- **Phase 3 (baseline characterization):** code complete; T4 runs pending. `llmserve suite`
+  runs the resumable sweeps in `configs/suites/`, and `llmserve report` builds the Baseline
+  Performance Report (H1–H3 verdicts, capacity, cost model) from them. The run order and
+  session plan are in the [Phase 3 runbook](docs/runbooks/phase3.md).
 
 GPU runs: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/vedantpople4/llmservelab/blob/main/notebooks/colab.ipynb) ([runbook](docs/runbooks/colab.md)).
 
@@ -66,7 +69,7 @@ or in a Kaggle notebook per [the runbook](docs/runbooks/kaggle.md) — using
 | `llmserve/analysis` | Aggregation, statistics, plots |
 | `configs/` | Committed experiment configs; every figure maps to one |
 | `docker/` | vLLM compose file (pinned image, §6 flags) — GPU host only |
-| `docs/runbooks/` | Kaggle and [Colab](docs/runbooks/colab.md) runbooks (free T4 routes, ADR-0011); [Mac](docs/runbooks/mac.md) (vllm-metal, ADR-0012) |
+| `docs/runbooks/` | Kaggle and [Colab](docs/runbooks/colab.md) runbooks (free T4 routes, ADR-0011); [Mac](docs/runbooks/mac.md) (vllm-metal, ADR-0012); [Phase 3](docs/runbooks/phase3.md) run order |
 | `scripts/` | `smoke.py` (Phase 1 exit check), `envelope.py` (back-of-envelope model) |
 | `results/` | Raw run output (git-ignored) |
 | `docs/adr/` | Architecture decision records |
