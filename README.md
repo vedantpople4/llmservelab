@@ -21,6 +21,9 @@ that model-quality work doesn't cover.
 
 GPU runs: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/vedantpople4/llmservelab/blob/main/notebooks/colab.ipynb) ([runbook](docs/runbooks/colab.md)).
 
+Scheduler development on a Mac: vLLM via vllm-metal, same AWQ checkpoint, never reported
+(ADR-0012, [runbook](docs/runbooks/mac.md)).
+
 See [docs/PLAN.md](docs/PLAN.md) and the detailed [implementation plan](docs/IMPLEMENTATION_PLAN.md).
 
 ## Setup
@@ -58,7 +61,7 @@ or in a Kaggle notebook per [the runbook](docs/runbooks/kaggle.md) — using
 | `llmserve/analysis` | Aggregation, statistics, plots |
 | `configs/` | Committed experiment configs; every figure maps to one |
 | `docker/` | vLLM compose file (pinned image, §6 flags) — GPU host only |
-| `docs/runbooks/` | Kaggle and [Colab](docs/runbooks/colab.md) notebook runbooks (free T4 routes, ADR-0011) |
+| `docs/runbooks/` | Kaggle and [Colab](docs/runbooks/colab.md) runbooks (free T4 routes, ADR-0011); [Mac](docs/runbooks/mac.md) (vllm-metal, ADR-0012) |
 | `scripts/` | `smoke.py` (Phase 1 exit check), `envelope.py` (back-of-envelope model) |
 | `results/` | Raw run output (git-ignored) |
 | `docs/adr/` | Architecture decision records |

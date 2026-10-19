@@ -30,7 +30,7 @@ def test_gpu_metrics_only_where_a_local_gpu_sampler_makes_sense() -> None:
 
 def test_prefix_cache_risk_is_limited_to_backends_that_can_have_one() -> None:
     risky = [kind for kind, caps in CAPABILITIES.items() if caps.prefix_cache_risk]
-    assert risky == ["nim", "vllm"]
+    assert risky == ["nim", "vllm", "vllm-metal"]
 
 
 def test_uncontrollable_prefix_cache_is_a_dev_surface_only() -> None:
@@ -43,9 +43,9 @@ def test_uncontrollable_prefix_cache_is_a_dev_surface_only() -> None:
     assert CAPABILITIES["vllm"].prefix_cache_control
 
 
-def test_only_mock_and_vllm_advertise_a_health_endpoint() -> None:
+def test_only_mock_and_vllm_servers_advertise_a_health_endpoint() -> None:
     healthy = {kind for kind, caps in CAPABILITIES.items() if caps.health_endpoint}
-    assert healthy == {"mock", "vllm"}
+    assert healthy == {"mock", "vllm", "vllm-metal"}
 
 
 def test_token_id_backends_agree_on_forced_output_length() -> None:

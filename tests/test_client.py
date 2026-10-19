@@ -283,6 +283,37 @@ def test_payload_is_the_adr005_contract() -> None:
     assert payload["model"] == "m"
 
 
+def test_forced_length_without_min_tokens_still_sends_ignore_eos() -> None:
+    """vllm-metal 400s on `min_tokens`; `ignore_eos` + `max_tokens` alone force the length."""
+
+    no_min = capabilities("vllm-metal")
+    body = sse(
+        *text_chunks(" a", " b", " c", finish="length"),
+        {"choices": [], "usage": {"prompt_tokens": 4, "completion_tokens": 3}},
+    )
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["json"] = json.loads(request.content)
+        return httpx.Response(200, content=body)
+
+    async def run() -> None:
+        clock = RunClock()
+        async with transport(httpx.MockTransport(handler)) as c:
+            rec = await stream_completion(
+                c, spec(), clock, endpoint="http://x/v1", model="m", t_arrival=clock(), caps=no_min
+            )
+        assert rec.status is RequestStatus.OK, rec.error
+
+    asyncio.run(run())
+
+    payload = seen["json"]
+    assert payload["prompt"] == [1, 2, 3, 4]
+    assert payload["max_tokens"] == 3
+    assert payload["ignore_eos"] is True
+    assert "min_tokens" not in payload
+
+
 def test_payload_for_a_backend_without_token_ids() -> None:
     """ADR-009 fallback: text prompt, no forced-length flags, usage still requested."""
 

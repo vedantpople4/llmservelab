@@ -13,3 +13,4 @@
 | [0009](0009-local-development-backends.md) | Local backends on a Mac for development |
 | [0010](0010-ollama-lmstudio-nim-dev-surfaces.md) | Ollama, LM Studio and NIM are development surfaces |
 | [0011](0011-free-kaggle-t4-measurement-hardware.md) | Free Kaggle T4 is the measurement hardware |
+| [0012](0012-vllm-metal-for-scheduler-development.md) | vllm-metal on a Mac is the scheduler development platform |
