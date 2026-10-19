@@ -1,0 +1,19 @@
+# Mac rehearsal of prompt-length against vllm-metal (ADR-0012). Never compared with T4 numbers.
+suite: dev-prompt-length
+description: >-
+  prompt-length's shape on an M5 MacBook (vllm-metal, TTFT ~230 ms at 128 tokens): prompts of 128
+  to 2048 tokens at concurrency 1, 16-token outputs, 12 requests, one repetition.
+base: ../../dev/e01_metal.yaml
+set:
+  repetitions: 1
+  load.concurrency: 1
+  load.requests: 12
+  workload:
+    classes:
+      - name: prompt_sweep
+        prompt: {distribution: fixed, tokens: 128}
+        output: {distribution: fixed, tokens: 16}
+sweep:
+  field: workload.classes.0.prompt.tokens
+  values: [128, 512, 1024, 2048]
+  label: "p{value:04d}"

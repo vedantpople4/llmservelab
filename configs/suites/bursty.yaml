@@ -1,0 +1,23 @@
+# Bursty load with FIFO admission (plan Phase 3 item 2): queue depth, TTFT and KV usage over time.
+suite: bursty
+description: >-
+  The PRD's bursty pattern (5 -> 50 -> 5 req/s, 10 s each) of the mixed workload through the
+  gateway with FIFO admission. Every phase exceeds the mixed capacity of a T4 (~1.5 req/s), so
+  the run measures how a ~600-request backlog builds and drains; request_timeout_s is raised to
+  1800 so the drain is not cut off. Later phases add scheduler points here.
+base: ../baseline/e07.yaml
+set:
+  repetitions: 3
+  gateway: {enabled: true, scheduler: {name: fifo}}
+  load:
+    mode: open
+    arrival:
+      process: bursty
+      phases:
+        - {duration_s: 10, rate: 5}
+        - {duration_s: 10, rate: 50}
+        - {duration_s: 10, rate: 5}
+    duration_s: 30
+  measurement.request_timeout_s: 1800
+points:
+  - label: fifo

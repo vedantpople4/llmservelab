@@ -1,0 +1,22 @@
+# H2 (plan Phase 3 item 4), homogeneous side: the interactive class alone at rho 0.85.
+suite: h2-interactive
+description: >-
+  H2: the `interactive` class of configs/workloads/mixed.yaml alone at rho = 0.85 (Poisson, 600 s,
+  warm-up 60 s, cool-down 30 s trimmed); the homogeneous baseline for h2-mixed. Needs the capacity
+  measured by capacity-interactive at run time: --set load.capacity_rps=<req/s>.
+base: ../baseline/e01.yaml
+set:
+  repetitions: 3
+  load: {mode: open, arrival: {process: poisson, rho: 0.85}, duration_s: 600}
+  measurement.warmup_s: 60
+  measurement.cooldown_s: 30
+  workload:
+    classes:
+      - name: interactive  # verbatim from configs/workloads/mixed.yaml
+        weight: 0.60
+        priority: high
+        slo: {ttft_ms: 500, tpot_ms: 100}
+        prompt: {distribution: uniform, min: 128, max: 512}
+        output: {distribution: fixed, tokens: 128}
+points:
+  - label: rho085

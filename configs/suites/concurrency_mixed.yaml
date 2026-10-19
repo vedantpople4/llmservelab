@@ -1,0 +1,20 @@
+# H1 for the mixed workload (plan Phase 3 item 2).
+suite: concurrency-mixed
+description: >-
+  H1: E07's mixed workload (configs/workloads/mixed.yaml) at concurrency 1 to 128. Requests scale
+  as max(200, 10*C), as in concurrency-p128. 3 repetitions, not 5: a mixed request averages ~1,200
+  prompt and ~220 output tokens, so each point costs several times its 128/128 counterpart and 5
+  reps would not fit the Colab budget. At C=128 the long-context class exceeds the T4's KV budget,
+  so preemption is expected there.
+base: ../baseline/e07.yaml
+set:
+  repetitions: 3
+  load.requests: 200
+sweep:
+  field: load.concurrency
+  values: [1, 2, 4, 8, 16, 32, 64, 128]
+  label: "c{value:03d}"
+  set_per_value:
+    32: {load.requests: 320}
+    64: {load.requests: 640}
+    128: {load.requests: 1280}

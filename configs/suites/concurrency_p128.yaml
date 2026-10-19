@@ -1,0 +1,17 @@
+# H1 for the homogeneous workload (plan Phase 3 item 2): latency and throughput vs concurrency.
+suite: concurrency-p128
+description: >-
+  H1: E01's 128-in/128-out workload at concurrency 1 to 128 locates the throughput plateau and the
+  P99 knee. Requests scale as max(200, 10*C), so every point keeps C streams busy for about ten
+  turns of the batch while the low-C points stay affordable.
+base: ../baseline/e01.yaml
+set:
+  repetitions: 5
+sweep:
+  field: load.concurrency
+  values: [1, 2, 4, 8, 16, 32, 64, 128]
+  label: "c{value:03d}"
+  set_per_value:
+    32: {load.requests: 320}
+    64: {load.requests: 640}
+    128: {load.requests: 1280}

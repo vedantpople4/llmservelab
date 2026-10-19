@@ -1,0 +1,25 @@
+# Capacity search for the interactive class alone (plan Phase 3 item 2); defines rho = 1 for
+# h2-interactive.
+suite: capacity-interactive
+description: >-
+  Capacity search for the `interactive` class of configs/workloads/mixed.yaml run alone: Poisson
+  arrivals at 1 to 10 req/s for 120 s (warm-up 20 s, cool-down 10 s trimmed). The envelope puts
+  capacity near 5 req/s. One repetition: this locates the knee, it is not a measurement.
+base: ../baseline/e01.yaml
+set:
+  repetitions: 1
+  load: {mode: open, arrival: {process: poisson}, duration_s: 120}
+  measurement.warmup_s: 20
+  measurement.cooldown_s: 10
+  workload:
+    classes:
+      - name: interactive  # verbatim from configs/workloads/mixed.yaml
+        weight: 0.60
+        priority: high
+        slo: {ttft_ms: 500, tpot_ms: 100}
+        prompt: {distribution: uniform, min: 128, max: 512}
+        output: {distribution: fixed, tokens: 128}
+sweep:
+  field: load.arrival.rate
+  values: [1, 2, 3, 4, 5, 6, 8, 10]
+  label: "r{value:02d}"
