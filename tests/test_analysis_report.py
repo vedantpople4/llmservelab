@@ -239,3 +239,21 @@ def test_describe_run_summarizes_one_run(results: Path) -> None:
     assert "reportable: no (server.kind is mock, not vllm" in text
     for label in ("TTFT", "TPOT", "E2E", "gen tok/s"):
         assert label in text
+
+
+def test_baseline_section_lists_e01_to_e07(run_factory: Any, tmp_path: Path) -> None:
+    run_factory(experiment_config(experiment="e01", repetitions=2))
+    root = tmp_path / "results"
+
+    dev = build_report(root, tmp_path / "dev", dev=True).read_text()
+    (row,) = [line for line in dev.splitlines() if line.startswith("| e01 | closed")]
+    assert row.startswith("| e01 | closed C=2 | c | 2 | yes |")
+    assert "| e01 | `" in dev  # provenance row for the table
+    assert (
+        "| e02 | — | — | — | — | Not yet run: `llmserve benchmark configs/baseline/e02.yaml`" in dev
+    )
+
+    strict = build_report(root, tmp_path / "strict").read_text()
+    assert "| e01 | — | — | — | — | Not yet run" in strict
+    assert "| baseline | e01 |" in strict
+    assert "server.kind is mock, not vllm" in strict

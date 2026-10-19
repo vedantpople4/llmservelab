@@ -39,7 +39,7 @@ from llmserve.analysis.hypotheses import (
     prefill_fit,
     prefill_points,
 )
-from llmserve.analysis.runs import Run
+from llmserve.analysis.runs import Run, latest_run
 from llmserve.analysis.stats import Estimate, mean_ci
 from llmserve.analysis.suites import SuiteRuns, load_suite_runs, suite_file_for, sweep_table
 from llmserve.scheduler.estimators import CostModel, DecodeFit, fit_decode
@@ -59,6 +59,8 @@ BURSTY = ("bursty",)
 H2_MIXED = ("h2-mixed",)
 H2_HOMOGENEOUS = ("h2-interactive",)
 DEV_SUITES = frozenset({"dev-concurrency", "dev-prompt-length"})
+BASELINE = tuple(f"e{n:02d}" for n in range(1, 8))
+EXIT_SUCCESS_RATE = 0.99
 
 SWEEP_METRICS = (
     "throughput.gen_toks_s",
@@ -172,6 +174,7 @@ def build_report(results_root: Path, out_dir: Path, *, dev: bool = False) -> Pat
         h3(prompt),
     ]
     body = [
+        *_baseline_section(r),
         *_capacity_section(r),
         *_concurrency_section(r, verdicts[0]),
         *_prompt_section(r, prompt, verdicts[2]),
@@ -210,6 +213,61 @@ def _verdict_section(verdicts: Sequence[Verdict]) -> list[str]:
         "`llmserve/analysis/capacity.py` before any data exists (plan §5)."
     )
     return [*lines, ""]
+
+
+def _baseline_section(r: _Report) -> list[str]:
+    """E01–E07, run as plain benchmarks (`configs/baseline/`); the Phase 3 exit check needs
+    each at 5 reps with ≥ 99% success."""
+    lines = [
+        "## Baseline experiments (E01–E07)",
+        "",
+        "| Exp | Load | Workload | Reps | Success ≥ 99% | TTFT P50 (ms) | TTFT P99 (ms) "
+        "| TPOT P50 (ms) | gen tok/s |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    shown: list[tuple[str, Run]] = []
+    for exp in BASELINE:
+        run = latest_run(r.root, exp)
+        if run is not None and not r.dev and run.unreportable_reasons:
+            r.excluded.append(
+                Excluded("baseline", exp, run.run_id, tuple(run.unreportable_reasons))
+            )
+            run = None
+        if run is None:
+            lines.append(
+                f"| {exp} | — | — | — | — | Not yet run: "
+                f"`llmserve benchmark configs/baseline/{exp}.yaml` | | | |"
+            )
+            continue
+        shown.append((exp, run))
+        cfg = run.config
+        load = f"closed C={cfg.load.concurrency}" if cfg.load.mode == "closed" else "open"
+        workload = ", ".join(c.name for c in cfg.workload.classes)
+        rates = run.rep_metric("success_rate")
+        ok = "yes" if rates and min(rates) >= EXIT_SUCCESS_RATE else "no"
+        cells = [
+            _est(mean_ci(run.rep_metric(metric)), scale, fmt)
+            for metric, scale, fmt in (
+                ("latency.ttft_s.p50", 1e3, ".1f"),
+                ("latency.ttft_s.p99", 1e3, ".1f"),
+                ("latency.tpot_s.p50", 1e3, ".2f"),
+                ("throughput.gen_toks_s", 1.0, ".1f"),
+            )
+        ]
+        lines.append(
+            f"| {exp} | {load} | {workload} | {len(rates)} | {ok} | " + " | ".join(cells) + " |"
+        )
+    lines += ["", "Cells: across-rep mean [t-based 95% CI].", ""]
+    if shown:
+        r.exhibits.append(
+            Exhibit(
+                ref="table: baseline experiments",
+                title="E01–E07",
+                suite_files=tuple(f"configs/baseline/{exp}.yaml" for exp, _ in shown),
+                runs=tuple(shown),
+            )
+        )
+    return lines
 
 
 def _capacity_section(r: _Report) -> list[str]:
