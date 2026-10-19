@@ -6,7 +6,8 @@ Design rules for this module (Phase 1 design items 2–3):
 - **`t_first_token` is set by the first chunk that carries a token**, never by the first byte of
   the response or an empty/role chunk.
 - **`usage` is ground truth** for token counts. When the backend guarantees exact output length
-  (`ignore_eos` + `min_tokens`), a mismatch is recorded as `length_mismatch`, not as a success.
+  (`ignore_eos`, plus `min_tokens` where the backend accepts it), a mismatch is recorded as
+  `length_mismatch`, not as a success.
 - **Timestamps come from the caller's clock** (ADR-006); this module never reads a wall clock.
 
 Chunk token counts are derived by tokenizing each chunk's text (documented approximation: BPE can
@@ -87,8 +88,9 @@ async def stream_completion(
         "stream_options": {"include_usage": True},
     }
     if caps.forced_output_length:
-        payload["min_tokens"] = spec.output_tokens
         payload["ignore_eos"] = True
+        if caps.min_tokens_param:
+            payload["min_tokens"] = spec.output_tokens
 
     state = _State()
     status = RequestStatus.OK

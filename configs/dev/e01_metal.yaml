@@ -1,0 +1,31 @@
+# Scheduler development on a Mac (ADR-0012): E01's shape against vllm-metal, the same
+# Qwen2.5-7B AWQ checkpoint as the T4 runs.
+#   ~/.venv-vllm-metal/bin/vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ --host 127.0.0.1 --port 8000 \
+#     --max-model-len 10240 --dtype float16 --no-enable-prefix-caching --max-num-seqs 256 \
+#     --gpu-memory-utilization 0.5
+# Never compared with T4 numbers; never in reports.
+schema_version: 1
+experiment: e01-metal
+seed: 42
+repetitions: 1
+
+server:
+  kind: vllm-metal
+  endpoint: http://localhost:8000/v1
+  model: Qwen/Qwen2.5-7B-Instruct-AWQ
+  expected_version: "0.31.0"
+  prefix_caching: false
+
+load:
+  mode: closed
+  concurrency: 1
+  requests: 30
+
+workload:
+  classes:
+    - name: p128_o128
+      prompt: {distribution: fixed, tokens: 128}
+      output: {distribution: fixed, tokens: 128}
+
+measurement:
+  warmup: {requests: 4, settle_timeout_s: 30}

@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-ServerKind = Literal["mock", "mlx", "llamacpp", "ollama", "lmstudio", "nim", "vllm"]
+ServerKind = Literal["mock", "mlx", "llamacpp", "ollama", "lmstudio", "nim", "vllm", "vllm-metal"]
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,9 @@ class Capabilities:
 
     forced_output_length: bool
     """`ignore_eos` + `max_tokens`/`min_tokens` produce exactly N tokens."""
+
+    min_tokens_param: bool
+    """Accepts `min_tokens`; vllm-metal rejects it, and `ignore_eos` + `max_tokens` suffice."""
 
     usage_block: bool
     """`stream_options.include_usage` returns a `usage` object, so token counts are ground truth."""
@@ -57,12 +60,14 @@ SERVER_KINDS: tuple[ServerKind, ...] = (
     "lmstudio",
     "nim",
     "vllm",
+    "vllm-metal",
 )
 
 CAPABILITIES: dict[str, Capabilities] = {
     "mock": Capabilities(
         token_id_prompts=True,
         forced_output_length=True,
+        min_tokens_param=True,
         usage_block=True,
         version_endpoint=True,
         model_lookup=True,
@@ -75,6 +80,7 @@ CAPABILITIES: dict[str, Capabilities] = {
     "mlx": Capabilities(
         token_id_prompts=False,
         forced_output_length=False,
+        min_tokens_param=False,
         usage_block=True,
         version_endpoint=False,
         model_lookup=True,
@@ -87,6 +93,7 @@ CAPABILITIES: dict[str, Capabilities] = {
     "llamacpp": Capabilities(
         token_id_prompts=False,
         forced_output_length=False,
+        min_tokens_param=False,
         usage_block=True,
         version_endpoint=False,
         model_lookup=True,
@@ -99,6 +106,7 @@ CAPABILITIES: dict[str, Capabilities] = {
     "ollama": Capabilities(
         token_id_prompts=False,
         forced_output_length=False,
+        min_tokens_param=False,
         usage_block=True,
         version_endpoint=False,
         model_lookup=True,
@@ -111,6 +119,7 @@ CAPABILITIES: dict[str, Capabilities] = {
     "lmstudio": Capabilities(
         token_id_prompts=False,
         forced_output_length=False,
+        min_tokens_param=False,
         usage_block=True,
         version_endpoint=False,
         model_lookup=True,
@@ -123,6 +132,7 @@ CAPABILITIES: dict[str, Capabilities] = {
     "nim": Capabilities(
         token_id_prompts=False,  # text prompts; not verified for token IDs
         forced_output_length=False,  # no ignore_eos contract on the OpenAI surface
+        min_tokens_param=False,
         usage_block=True,
         version_endpoint=False,
         model_lookup=True,
@@ -135,6 +145,7 @@ CAPABILITIES: dict[str, Capabilities] = {
     "vllm": Capabilities(
         token_id_prompts=True,
         forced_output_length=True,
+        min_tokens_param=True,
         usage_block=True,
         version_endpoint=True,
         model_lookup=True,
@@ -143,6 +154,19 @@ CAPABILITIES: dict[str, Capabilities] = {
         prefix_cache_control=True,
         health_endpoint=True,
         gpu_metrics=True,
+    ),
+    "vllm-metal": Capabilities(
+        token_id_prompts=True,
+        forced_output_length=True,  # ignore_eos + max_tokens; verified exact on 0.31.0
+        min_tokens_param=False,  # 400: "does not support ... logits processors (min_tokens)"
+        usage_block=True,
+        version_endpoint=True,
+        model_lookup=True,
+        metrics_endpoint=True,  # upstream vLLM /metrics: kv_cache_usage_perc naming
+        prefix_cache_risk=True,  # automatic prefix caching is on by default
+        prefix_cache_control=True,  # --no-enable-prefix-caching is honored
+        health_endpoint=True,
+        gpu_metrics=False,  # Apple GPU: no NVML
     ),
 }
 
