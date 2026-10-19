@@ -14,7 +14,7 @@ from matplotlib.figure import Figure
 from test_analysis_suites import closed, write_manifest
 from test_experiment import run_in_process
 
-from llmserve.analysis.report import DEV_BANNER, build_report, describe_run, unreportable_reasons
+from llmserve.analysis.report import DEV_BANNER, build_report, describe_run
 from llmserve.analysis.runs import Run
 from llmserve.mock import DelayModel, MockEngine
 from llmserve.scheduler.estimators import CostModel
@@ -218,7 +218,7 @@ def test_reportable_runs_are_kept_and_others_excluded(results: Path, tmp_path: P
         metadata = json.loads((path / "metadata.json").read_text())
         (path / "metadata.json").write_text(json.dumps({**metadata, "git_dirty": False}))
     for run in _runs(root):
-        assert run.reportable == (not unreportable_reasons(run))
+        assert run.reportable == (not run.unreportable_reasons)
     out = tmp_path / "out"
     md = build_report(root, out).read_text()
     h1_row = md.split("| H1 |")[1].split("\n")[0]

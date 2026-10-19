@@ -142,6 +142,29 @@ def _suite(
     return 1 if counts.get("failed") else 0
 
 
+def _analyze(path: str) -> int:
+    from llmserve.analysis.report import describe_run
+    from llmserve.analysis.runs import Run
+
+    run_dir = Path(path)
+    if not (run_dir / "metadata.json").is_file():
+        print(f"FAIL {path}: not a run directory (no metadata.json)", file=sys.stderr)
+        return 2
+    print(describe_run(Run(run_dir)))
+    return 0
+
+
+def _report(path: str, *, out: str, dev: bool) -> int:
+    from llmserve.analysis.report import build_report
+
+    root = Path(path)
+    if not root.is_dir():
+        print(f"FAIL {path}: no results directory", file=sys.stderr)
+        return 2
+    print(f"ok   {build_report(root, Path(out), dev=dev)}")
+    return 0
+
+
 def _is_suite(path: Path) -> bool:
     import yaml
 
@@ -198,8 +221,18 @@ def main(argv: list[str] | None = None) -> None:
     suite.add_argument(
         "--plan", action="store_true", help="list points and duration estimates; run nothing"
     )
-    for name in ("analyze", "report"):
-        sub.add_parser(name).add_argument("path")
+    analyze = sub.add_parser("analyze", help="describe one run directory")
+    analyze.add_argument("path", help="results/<experiment>/<run_id>")
+    report = sub.add_parser("report", help="build the Baseline Performance Report")
+    report.add_argument("path", nargs="?", default="results", help="results root (default results)")
+    report.add_argument(
+        "-o", "--out", default="docs/reports", help="output directory (default docs/reports)"
+    )
+    report.add_argument(
+        "--dev",
+        action="store_true",
+        help="include non-reportable runs (mock, vllm-metal, dirty, invalid) under a banner",
+    )
     args = parser.parse_args(argv)
     if args.command == "validate":
         raise SystemExit(_validate(args.paths))
@@ -223,4 +256,8 @@ def main(argv: list[str] | None = None) -> None:
                 plan=args.plan,
             )
         )
+    if args.command == "analyze":
+        raise SystemExit(_analyze(args.path))
+    if args.command == "report":
+        raise SystemExit(_report(args.path, out=args.out, dev=args.dev))
     raise SystemExit(f"llmserve {args.command}: not implemented yet")

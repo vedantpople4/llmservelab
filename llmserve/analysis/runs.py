@@ -57,12 +57,20 @@ class Run:
         return self.config.experiment
 
     @property
+    def unreportable_reasons(self) -> list[str]:
+        """Why this run may not appear in a report; empty exactly when it may."""
+        reasons = []
+        if self.config.server.kind != "vllm":
+            reasons.append(f"server.kind is {self.config.server.kind}, not vllm")
+        if self.metadata.get("git_dirty") is not False:
+            reasons.append("git tree dirty or unknown")
+        if self.summary["invalid"]:
+            reasons.append("summary invalid (> 1% failed requests)")
+        return reasons
+
+    @property
     def reportable(self) -> bool:
-        return (
-            self.config.server.kind == "vllm"
-            and self.metadata.get("git_dirty") is False
-            and not self.summary["invalid"]
-        )
+        return not self.unreportable_reasons
 
     def rep_dirs(self) -> list[Path]:
         return sorted(p for p in self.path.glob("rep-*") if p.is_dir())

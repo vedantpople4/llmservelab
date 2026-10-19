@@ -87,18 +87,6 @@ class Exhibit:
     runs: tuple[tuple[str, Run], ...]  # (point label, run)
 
 
-def unreportable_reasons(run: Run) -> list[str]:
-    """Why `run` may not appear in a report; empty exactly when `run.reportable`."""
-    reasons = []
-    if run.config.server.kind != "vllm":
-        reasons.append(f"server.kind is {run.config.server.kind}, not vllm")
-    if run.metadata.get("git_dirty") is not False:
-        reasons.append("git tree dirty or unknown")
-    if run.summary["invalid"]:
-        reasons.append("summary invalid (> 1% failed requests)")
-    return reasons
-
-
 class _Report:
     """One build: loaded suites, exclusions, and the exhibits written so far."""
 
@@ -158,7 +146,7 @@ class _Report:
             loaded = load_suite_runs(self.root, name)
             if loaded is not None and not self.dev:
                 for point in loaded.points:
-                    reasons = unreportable_reasons(point.run)
+                    reasons = point.run.unreportable_reasons
                     if reasons:
                         self.excluded.append(
                             Excluded(name, point.label, point.run.run_id, tuple(reasons))
@@ -548,7 +536,7 @@ def describe_run(run: Run) -> str:
         for status, count in s["failures_by_status"].items():
             failures[status] = failures.get(status, 0) + count
     version = (md.get("backend_version") or {}).get("value")
-    reasons = unreportable_reasons(run)
+    reasons = run.unreportable_reasons
     failed = ", ".join(f"{k} {v}" for k, v in sorted(failures.items())) or "none"
     lines = [
         f"run {run.run_id}  (experiment {run.experiment})",
