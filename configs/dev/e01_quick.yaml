@@ -10,7 +10,7 @@ server:
   kind: vllm
   endpoint: http://localhost:8000/v1
   model: Qwen/Qwen2.5-7B-Instruct-AWQ
-  model_revision: null
+  model_revision: b25037543e9394b818fdfca67ab2a00ecc7dd641  # HF commit of Qwen2.5-7B-Instruct-AWQ (2024-10-09)
   prefix_caching: false
 
 load:
