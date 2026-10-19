@@ -12,7 +12,9 @@ from llmserve.config.schema import ExperimentConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPERIMENT_CONFIGS = sorted(
-    p for p in (ROOT / "configs").rglob("*.yaml") if p.parent.name != "workloads"
+    p
+    for p in (ROOT / "configs").rglob("*.yaml")
+    if p.parent.name != "workloads" and "suites" not in p.parts
 )
 
 BASE: dict[str, Any] = {
