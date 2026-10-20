@@ -17,6 +17,6 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy llmserve tests
-      - run: uv run pytest -v -p no:cacheprovider
+      - run: uv run pytest -q
       - name: Validate committed experiment configs
         run: uv run llmserve validate $(find configs -name '*.yaml' -not -path 'configs/workloads/*')
