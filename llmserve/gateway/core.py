@@ -95,8 +95,11 @@ class Gateway:
             # event again, so the wait below returns immediately instead of losing the wake.
             self._wake.clear()
             self._admit_ready()
+            # Not wait_for: on 3.11 it drops a cancel that lands as the wait completes, and
+            # __aexit__ cancels right after the last completion sets the event.
             try:
-                await asyncio.wait_for(self._wake.wait(), timeout=DISPATCH_TICK_S)
+                async with asyncio.timeout(DISPATCH_TICK_S):
+                    await self._wake.wait()
             except TimeoutError:
                 pass
 
