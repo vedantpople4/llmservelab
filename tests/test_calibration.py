@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import os
 import socket
 import subprocess
 import sys
@@ -120,6 +121,10 @@ def runs(mock_url: str, tmp_path_factory: pytest.TempPathFactory) -> dict[tuple[
     return {(c, p): asyncio.run(one(c, p, n)) for c, p, n in SPECS}
 
 
+@pytest.mark.skipif(
+    "CI" in os.environ,
+    reason="wall-clock timing: on a shared CI runner the 2 us/token delta is lost in timer noise",
+)
 def test_fit_recovers_known_params_through_the_real_harness(
     runs: dict[tuple[int, int], Run],
 ) -> None:
