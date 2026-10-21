@@ -51,21 +51,46 @@ def test_mock_runs_are_never_reportable(run_factory: RunFactory) -> None:
     assert run.reportable is False
 
 
-def test_reportable_needs_vllm_a_clean_tree_and_a_valid_summary(tmp_path: Path) -> None:
-    run_dir = tmp_path / "e01" / "20261019T000000Z-aaaaaaaa-bbbbbbb"
-    run_dir.mkdir(parents=True)
+def _written_run(
+    root: Path, *, dirty: bool = False, invalid: bool = False, tpots: tuple[float, ...] = ()
+) -> Run:
+    run_dir = root / "e01" / "20261019T000000Z-aaaaaaaa-bbbbbbb"
+    run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "config.resolved.yaml").write_text(
         "schema_version: 1\nexperiment: e01\nseed: 1\n"
-        "server: {kind: vllm, endpoint: 'http://x/v1', model: m}\n"
+        "server: {kind: vllm-metal, endpoint: 'http://x/v1', model: m}\n"
         "load: {mode: closed, concurrency: 1, requests: 1}\n"
         "workload: {classes: [{name: c, prompt: {distribution: fixed, tokens: 1},"
         " output: {distribution: fixed, tokens: 1}}]}\n"
     )
+    per_rep = [{"latency": {"tpot_s": {"p50": t}}} for t in tpots]
+    (run_dir / "metadata.json").write_text(json.dumps({"git_dirty": dirty}))
+    (run_dir / "summary.json").write_text(json.dumps({"invalid": invalid, "per_rep": per_rep}))
+    return Run(run_dir)
+
+
+def test_reportable_needs_vllm_metal_a_clean_tree_and_a_valid_summary(tmp_path: Path) -> None:
     cases = ((False, False, True), (True, False, False), (False, True, False))
     for dirty, invalid, expected in cases:
-        (run_dir / "metadata.json").write_text(json.dumps({"git_dirty": dirty}))
-        (run_dir / "summary.json").write_text(json.dumps({"invalid": invalid, "per_rep": []}))
-        assert Run(run_dir).reportable is expected
+        assert _written_run(tmp_path, dirty=dirty, invalid=invalid).reportable is expected
+
+
+def test_more_than_ten_percent_thermal_drift_is_unreportable(tmp_path: Path) -> None:
+    run = _written_run(tmp_path, tpots=(0.020, 0.021, 0.0222))
+    assert math.isclose(run.thermal_drift or 0.0, 0.11)
+    assert run.unreportable_reasons == ["thermal drift +11% (last rep vs first, TPOT p50)"]
+
+
+def test_drift_under_ten_percent_is_reportable(tmp_path: Path) -> None:
+    run = _written_run(tmp_path, tpots=(0.020, 0.025, 0.0218))
+    assert math.isclose(run.thermal_drift or 0.0, 0.09)
+    assert run.reportable is True
+
+
+def test_a_single_rep_has_no_drift_and_stays_reportable(tmp_path: Path) -> None:
+    run = _written_run(tmp_path, tpots=(0.020,))
+    assert run.thermal_drift is None
+    assert run.reportable is True
 
 
 def test_rep_metric_reads_one_value_per_rep(run_factory: RunFactory) -> None:

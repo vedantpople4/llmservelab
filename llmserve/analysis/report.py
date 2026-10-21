@@ -5,7 +5,7 @@ Rules:
 
 - **Inputs** are the suite manifests under `<results_root>/_suites/` (`suites.load_suite_runs`).
   A suite with no manifest renders as "not yet run" with the command that runs it.
-- **Reportability** (ADR-0009, ADR-0012): by default every run whose `Run.reportable` is False
+- **Reportability** (ADR-0009, ADR-0013): by default every run whose `Run.reportable` is False
   is excluded and listed with its reasons. With `dev=True` they are included, and a banner marks
   the report and every figure title as development results. Dev mode also falls back to the Mac
   dev suites (`dev-concurrency`, `dev-prompt-length`) when the study suite is absent.
@@ -44,7 +44,7 @@ from llmserve.analysis.stats import Estimate, mean_ci
 from llmserve.analysis.suites import SuiteRuns, load_suite_runs, suite_file_for, sweep_table
 from llmserve.scheduler.estimators import CostModel, DecodeFit, fit_decode
 
-DEV_BANNER = "DEVELOPMENT RESULTS — not reportable (ADR-0009/0012)"
+DEV_BANNER = "DEVELOPMENT RESULTS — not reportable (ADR-0009/0013)"
 
 CONCURRENCY = ("concurrency-p128", "dev-concurrency")
 CONCURRENCY_MIXED = ("concurrency-mixed",)
@@ -517,8 +517,8 @@ def _provenance_section(r: _Report) -> list[str]:
             f"**{fig.ref}** ({fig.title}). Suite files: "
             + ", ".join(f"`{f}`" for f in fig.suite_files),
             "",
-            "| Point | Run | Config hash | Git SHA | Server (version) | Hardware |",
-            "|---|---|---|---|---|---|",
+            "| Point | Run | Config hash | Git SHA | Server (version) | Hardware | Thermal drift |",
+            "|---|---|---|---|---|---|---|",
         ]
         for label, run in fig.runs:
             md = run.metadata
@@ -527,7 +527,8 @@ def _provenance_section(r: _Report) -> list[str]:
             lines.append(
                 f"| {label} | `{run.run_id}` | `{str(md.get('config_hash'))[:12]}` "
                 f"| `{md.get('git_sha')}`{' (dirty)' if md.get('git_dirty') else ''} "
-                f"| {run.config.server.kind} ({version}) | {gpu or md.get('platform')} |"
+                f"| {run.config.server.kind} ({version}) | {gpu or md.get('platform')} "
+                f"| {_drift(run.thermal_drift)} |"
             )
         lines.append("")
     return lines
@@ -566,6 +567,10 @@ def _est(est: Estimate | None, scale: float, fmt: str) -> str:
     if math.isfinite(est.lo) and math.isfinite(est.hi):
         text += f" [{format(est.lo * scale, fmt)}, {format(est.hi * scale, fmt)}]"
     return text
+
+
+def _drift(drift: float | None) -> str:
+    return "—" if drift is None else f"{drift:+.1%}"
 
 
 def _poly(a: float, b: float, c: float) -> str:
@@ -611,6 +616,7 @@ def describe_run(run: Run) -> str:
             else "yes"
         ),
         "  reportable: " + ("yes" if not reasons else "no (" + "; ".join(reasons) + ")"),
+        f"  thermal drift (last rep vs first, TPOT P50): {_drift(run.thermal_drift)}",
         "  latency (across-rep mean [95% CI], ms):",
     ]
     for metric, name in (("ttft_s", "TTFT"), ("tpot_s", "TPOT"), ("e2e_s", "E2E")):

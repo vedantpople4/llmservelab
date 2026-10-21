@@ -194,8 +194,8 @@ class Load(_Model):
 
 class Server(_Model):
     # mock: in-package simulator. mlx / llamacpp / ollama / lmstudio / nim: development surfaces
-    # (ADR-009, ADR-0010). vllm-metal: upstream vLLM on Apple Silicon, for scheduler development
-    # (ADR-0012). vllm: the only backend whose results may appear in the paper.
+    # (ADR-009, ADR-0010). vllm-metal: upstream vLLM on Apple Silicon, the only backend whose
+    # results may appear in the paper (ADR-0013). vllm: CUDA vLLM, the former T4 platform.
     # `kind` must stay in sync with llmserve.client.capabilities.SERVER_KINDS.
     kind: Literal["mock", "mlx", "llamacpp", "ollama", "lmstudio", "nim", "vllm", "vllm-metal"]
     endpoint: Annotated[str, Field(pattern=r"^https?://")]
