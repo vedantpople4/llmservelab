@@ -2,14 +2,15 @@
 # rho 0.85.
 suite: h2-mixed
 description: >-
-  H2: the mixed workload at rho = 0.85 (Poisson, 600 s, warm-up 60 s, cool-down 30 s trimmed);
+  H2: the mixed workload at rho = 0.85 (Poisson, 1800 s, warm-up 120 s, cool-down 60 s trimmed);
   compare its interactive requests' P95/P99 TTFT with h2-interactive at the same rho. Needs the
-  capacity measured by capacity-mixed at run time: --set load.capacity_rps=<req/s>.
+  capacity measured by capacity-mixed at run time: --set load.capacity_rps=<req/s>. 1800 s: at
+  the Mac's ~0.2 req/s that keeps ~180 interactive requests in each rep's window.
 base: ../baseline/e07.yaml
 set:
   repetitions: 3
-  load: {mode: open, arrival: {process: poisson, rho: 0.85}, duration_s: 600}
-  measurement.warmup_s: 60
-  measurement.cooldown_s: 30
+  load: {mode: open, arrival: {process: poisson, rho: 0.85}, duration_s: 1800}
+  measurement.warmup_s: 120
+  measurement.cooldown_s: 60
 points:
   - label: rho085

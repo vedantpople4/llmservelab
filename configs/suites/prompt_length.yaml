@@ -2,12 +2,13 @@
 suite: prompt-length
 description: >-
   H3: prompt length 128 to 8192 tokens at concurrency 1 with a fixed 16-token output, so each
-  request is dominated by its prefill. 50 requests per point; single-stream TTFT has low variance.
+  request is dominated by its prefill. 30 requests per point and 3 repetitions: single-stream
+  TTFT has low variance, and 8192 tokens take ~13 s to prefill on the Mac.
 base: ../baseline/e01.yaml
 set:
-  repetitions: 5
+  repetitions: 3
   load.concurrency: 1
-  load.requests: 50
+  load.requests: 30
   workload:
     classes:
       - name: prompt_sweep

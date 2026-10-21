@@ -2,17 +2,17 @@
 # without bound. This defines rho = 1 for the workload.
 suite: capacity-p128
 description: >-
-  Capacity search for E01's 128/128 workload: Poisson arrivals at 2 to 16 req/s for 120 s
-  (warm-up 20 s, cool-down 10 s trimmed). The envelope predicts ~1,100 tok/s at batch 32, about
-  8 req/s, so the rates span well below to twice that. One repetition: this locates the knee,
+  Capacity search for E01's 128/128 workload: Poisson arrivals at 0.2 to 1.2 req/s for 300 s
+  (warm-up 30 s, cool-down 15 s trimmed). Closed loop on the Mac reached 0.80 req/s at C=64, so
+  the rates span well below to 1.5x that, and 300 s keeps 60+ arrivals at the lowest rate. One repetition: this locates the knee,
   it is not a measurement.
 base: ../baseline/e01.yaml
 set:
   repetitions: 1
-  load: {mode: open, arrival: {process: poisson}, duration_s: 120}
-  measurement.warmup_s: 20
-  measurement.cooldown_s: 10
+  load: {mode: open, arrival: {process: poisson}, duration_s: 300}
+  measurement.warmup_s: 30
+  measurement.cooldown_s: 15
 sweep:
   field: load.arrival.rate
-  values: [2, 4, 6, 8, 10, 12, 16]
-  label: "r{value:02d}"
+  values: [0.2, 0.4, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2]
+  label: "r{value:.2f}"

@@ -2,12 +2,12 @@
 suite: output-length
 description: >-
   Output length 16 to 1024 tokens with 128-token prompts at concurrency 8, for TPOT as the
-  context grows. 100 requests per point, 3 repetitions.
+  context grows. 48 requests per point (six turns of the batch), 3 repetitions.
 base: ../baseline/e01.yaml
 set:
   repetitions: 3
   load.concurrency: 8
-  load.requests: 100
+  load.requests: 48
   workload:
     classes:
       - name: output_sweep

@@ -3,23 +3,23 @@
 suite: capacity-interactive
 description: >-
   Capacity search for the `interactive` class of configs/workloads/mixed.yaml run alone: Poisson
-  arrivals at 1 to 10 req/s for 120 s (warm-up 20 s, cool-down 10 s trimmed). The envelope puts
-  capacity near 5 req/s. One repetition: this locates the knee, it is not a measurement.
+  arrivals at 0.2 to 1.0 req/s for 300 s (warm-up 30 s, cool-down 15 s trimmed). Prompts average
+  320 tokens, so capacity on the Mac should sit a little below capacity-p128's. One repetition: this locates the knee, it is not a measurement.
 base: ../baseline/e01.yaml
 set:
   repetitions: 1
-  load: {mode: open, arrival: {process: poisson}, duration_s: 120}
-  measurement.warmup_s: 20
-  measurement.cooldown_s: 10
+  load: {mode: open, arrival: {process: poisson}, duration_s: 300}
+  measurement.warmup_s: 30
+  measurement.cooldown_s: 15
   workload:
     classes:
       - name: interactive  # verbatim from configs/workloads/mixed.yaml
         weight: 0.60
         priority: high
-        slo: {ttft_ms: 500, tpot_ms: 100}
+        slo: {ttft_ms: 1500, tpot_ms: 200}
         prompt: {distribution: uniform, min: 128, max: 512}
         output: {distribution: fixed, tokens: 128}
 sweep:
   field: load.arrival.rate
-  values: [1, 2, 3, 4, 5, 6, 8, 10]
-  label: "r{value:02d}"
+  values: [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0]
+  label: "r{value:.2f}"
