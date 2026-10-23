@@ -13,10 +13,10 @@ from conftest import RunFactory, experiment_config
 from llmserve.analysis.runs import Run
 from llmserve.analysis.suites import load_suite_runs, sweep_table
 
-Point = tuple[str, float, Run | None, str]  # label, value, run, status
+Point = tuple[str, float | None, Run | None, str]  # label, value, run, status
 
 
-def write_manifest(root: Path, suite: str, axis: str, points: Sequence[Point]) -> None:
+def write_manifest(root: Path, suite: str, axis: str | None, points: Sequence[Point]) -> None:
     """A manifest in the suite runner's format; `run=None` writes a point with no run dir."""
     (root / "_suites").mkdir(parents=True, exist_ok=True)
     rows = []
@@ -100,3 +100,14 @@ def test_sweep_table_holds_across_rep_mean_and_ci(run_factory: RunFactory, tmp_p
     assert row["lo"] <= row["mean"] <= row["hi"]
     missing = table[table["metric"] == "latency.no_such.p50"].iloc[0]
     assert missing["n"] == 0 and math.isnan(missing["mean"])
+
+
+def test_a_suite_of_named_points_loads_without_values(
+    run_factory: RunFactory, tmp_path: Path
+) -> None:
+    root = tmp_path / "results"
+    fifo = run_factory(experiment_config(experiment="bursty-fifo"))
+    write_manifest(root, "bursty", None, [("fifo", None, fifo, "done")])
+    suite = load_suite_runs(root, "bursty")
+    assert suite is not None
+    assert [(p.label, p.value, p.run.path) for p in suite.points] == [("fifo", None, fifo.path)]

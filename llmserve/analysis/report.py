@@ -488,6 +488,8 @@ def _decode_fit(suite: SuiteRuns | None) -> DecodeFit | None:
     xs: list[float] = []
     ys: list[float] = []
     for point in suite.points:
+        if point.value is None:
+            continue
         values = point.run.rep_metric("latency.tpot_s.p50")
         xs += [point.value] * len(values)
         ys += values

@@ -109,6 +109,8 @@ def capacity_points(suite: SuiteRuns) -> list[RatePoint]:
     """One `RatePoint` per suite point; the axis value is the offered rate."""
     out = []
     for point in suite.points:
+        if point.value is None:
+            continue
         achieved = point.run.rep_metric("throughput.req_s")
         arrived = [
             s["n_measured"] / s["window"]["length_s"]
