@@ -1,5 +1,8 @@
 # Kaggle runbook: free T4 sessions for real measurements (ADR-0011)
 
+> **Superseded (ADR-0013).** The study now runs on the Mac ([mac.md](mac.md)). This T4 route is
+> kept for reference and is not maintained.
+
 The whole study runs here: **one Tesla T4, `Qwen/Qwen2.5-7B-Instruct-AWQ`, pip-installed
 vLLM, no Docker, no money.** Kaggle gives 30 GPU-hours per rolling week to a phone-verified
 account. This notebook flow replaces `docker/compose.yml` for the Kaggle route; both must use
