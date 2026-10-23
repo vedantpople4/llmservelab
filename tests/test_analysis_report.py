@@ -140,7 +140,7 @@ def test_mock_runs_are_excluded_by_default(results: Path, tmp_path: Path) -> Non
     excluded = md.split("## Excluded runs")[1].split("## Provenance")[0]
     for run in _runs(results):
         assert f"`{run.run_id}`" in excluded
-    assert "server.kind is mock, not vllm" in excluded
+    assert "server.kind is mock, not vllm-metal" in excluded
     for hid in ("H1", "H2", "H3"):
         assert f"| {hid} |" in md and "**not-run**" in md.split(f"| {hid} |")[1].split("\n")[0]
     assert "`concurrency-p128` has no reportable runs" in md
@@ -214,9 +214,14 @@ def test_reportable_runs_are_kept_and_others_excluded(results: Path, tmp_path: P
     shutil.copytree(results, root)
     for path in sorted(root.glob("concurrency-p128-*/*")):
         config = path / "config.resolved.yaml"
-        config.write_text(config.read_text().replace("kind: mock", "kind: vllm"))
+        config.write_text(config.read_text().replace("kind: mock", "kind: vllm-metal"))
         metadata = json.loads((path / "metadata.json").read_text())
         (path / "metadata.json").write_text(json.dumps({**metadata, "git_dirty": False}))
+        # The mock's wall-clock TPOT wanders between reps; pin it so drift cannot exclude the run.
+        summary = json.loads((path / "summary.json").read_text())
+        for rep in summary["per_rep"]:
+            rep["latency"]["tpot_s"]["p50"] = summary["per_rep"][0]["latency"]["tpot_s"]["p50"]
+        (path / "summary.json").write_text(json.dumps(summary))
     for run in _runs(root):
         assert run.reportable == (not run.unreportable_reasons)
     out = tmp_path / "out"
@@ -236,7 +241,7 @@ def test_describe_run_summarizes_one_run(results: Path) -> None:
     assert run.run_id in text
     assert f"reps 2; requests {total}, ok {total}, failed 0 (none)" in text
     assert "valid: yes" in text
-    assert "reportable: no (server.kind is mock, not vllm" in text
+    assert "reportable: no (server.kind is mock, not vllm-metal" in text
     for label in ("TTFT", "TPOT", "E2E", "gen tok/s"):
         assert label in text
 
@@ -256,4 +261,4 @@ def test_baseline_section_lists_e01_to_e07(run_factory: Any, tmp_path: Path) -> 
     strict = build_report(root, tmp_path / "strict").read_text()
     assert "| e01 | — | — | — | — | Not yet run" in strict
     assert "| baseline | e01 |" in strict
-    assert "server.kind is mock, not vllm" in strict
+    assert "server.kind is mock, not vllm-metal" in strict

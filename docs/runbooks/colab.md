@@ -1,5 +1,8 @@
 # Colab runbook: free T4 sessions on Google Colab
 
+> **Superseded (ADR-0013).** The study now runs on the Mac ([mac.md](mac.md)). This T4 route is
+> kept for reference and is not maintained.
+
 This is the Colab route to the same measurement setup as [the Kaggle runbook](kaggle.md):
 **one Tesla T4, `Qwen/Qwen2.5-7B-Instruct-AWQ`, pip-installed vLLM 0.10.2, no Docker.** The
 card, model, vLLM pin and §6 flags are identical to the Kaggle route (ADR-0011), so the

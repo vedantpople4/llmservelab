@@ -106,7 +106,16 @@ backend cannot disable it), plus `server.api_key_env` for bearer tokens. Never r
 
 **ADR-0011: Free Kaggle T4 is the measurement hardware.** One Tesla T4 per run, serving
 `Qwen2.5-7B-Instruct-AWQ` in a Kaggle T4 ×2 session (30 free GPU-hours/week, no Docker, no bf16
-silicon). §6 is sized for this SKU; `docs/runbooks/kaggle.md` is the operating procedure.
+silicon). Superseded by ADR-0013.
+
+**ADR-0012: vllm-metal on a Mac is the scheduler development platform.** `server.kind:
+vllm-metal` runs upstream vLLM on Apple Silicon with the same checkpoint and `/metrics`.
+
+**ADR-0013: The M5 MacBook with vllm-metal is the measurement platform.** Every reported number
+comes from one M5 MacBook Air (24 GB) running vLLM 0.31.0 + vllm-metal 0.31.0. Only `kind:
+vllm-metal` is reportable. Configs are sized for the Mac, and thermal drift, sleep and battery
+power make a run unreportable. §6 is re-derived for this machine; `docs/runbooks/mac.md` is the
+operating procedure.
 
 The full ADRs are in [docs/adr/](adr/README.md).
 
@@ -229,59 +238,44 @@ These rules are fixed before any data exists, so results can't be cherry-picked.
 
 ### 6. Hardware and model sizing
 
-*Re-pinned for the free Kaggle route (ADR-0011): one Tesla T4 per run, `Qwen2.5-7B-Instruct-AWQ`.*
+*Re-pinned for the Mac (ADR-0013): one M5 MacBook Air, vllm-metal, `Qwen2.5-7B-Instruct-AWQ`.*
 
 - **Model:** `Qwen/Qwen2.5-7B-Instruct-AWQ` (INT4 weights ≈ 5.6 GB, fp16 activations), pinned
-  by revision SHA. The card is Turing, which has no bf16 silicon, so fp16 is the activation dtype;
-  the model stays 7B, quantized — the production shape this class of card actually serves.
+  by revision SHA `b25037543e9394b818fdfca67ab2a00ecc7dd641`, loaded through mlx-lm's AWQ repack.
 - **KV cost per token:** quantization does not touch the KV cache: 2 (K, V) × 28 layers ×
   4 KV heads × 128 head dim × 2 bytes ≈ **56 KiB**.
-- **GPU (one SKU for the whole study):** one Tesla T4 16 GB — the first GPU of a Kaggle T4 ×2
-  session (`CUDA_VISIBLE_DEVICES=0`; the second T4 stays idle so runs are single-GPU, and
-  Kaggle's P100 is excluded outright: sm_60, unsupported by vLLM). With
-  `gpu_memory_utilization = 0.90`, about 14.4 GB is usable. Minus ~5.6 GB of weights and ~1 GB
-  of activations/workspace, that leaves roughly 7.5–8 GB of KV, or about 130–140k tokens: about
-  16 concurrent 8K-token requests, or about 500 concurrent 256-token requests. KV pressure (H6)
-  is then reachable at realistic mixes — a larger card would hide it, which is part of why this
-  SKU is acceptable.
-- **Back-of-envelope model** (goes in `docs/background.md`, and is compared with measurements in
-  Phase 3; T4 datasheet numbers, to be checked against Phase 1 measurements):
-  - Prefill is roughly compute-bound: FLOPs ≈ 2 × 7.6e9 × prompt tokens. For 1K tokens that is
-    about 15.6 TFLOP; at ~65 TFLOPS fp16 and ~0.3 MFU, ≈ 0.8 s.
-  - Decode at small batch is memory-bound: time per step ≈ bytes read (weights + KV) ÷ memory
-    bandwidth. T4 has 320 GB/s and INT4 weights are ~5.6 GB, so ≈ 20 ms per token at batch 1
-    (plus KV reads); the old 15 GB-weight estimate would have said ~50 ms.
+- **Machine (one for the whole study):** M5 MacBook Air, 24 GB unified memory, macOS 27. With
+  `--gpu-memory-utilization 0.5` the KV pool is 52,784 tokens (≈ 2.8 GB): about 6 concurrent
+  8K-token requests, or about 200 concurrent 256-token requests. Higher values page the pool
+  into swap. KV pressure (H6) appears at lower load than on a datacenter card.
+- **Measured envelope** (closed-loop probes, ADR-0013): prefill ≈ 600–700 tok/s for 2K–8K
+  prompts; TPOT p50 47 ms at batch 1, 200 ms at 16, 537 ms at 64; throughput for 128/128 rises
+  to ≈ 0.8 req/s at C = 64; the mixed workload runs at ≈ 0.22 req/s at C = 16.
 - **Server settings** (recorded, and held constant unless they are the variable under test):
+  - `--revision <pinned SHA>`
   - `--max-model-len 10240` (8K prompt + 1K output + margin)
-  - `--gpu-memory-utilization 0.90`
-  - `--dtype auto` (resolves to fp16 on Turing; recorded either way)
+  - `--gpu-memory-utilization 0.5`
+  - `--dtype float16`
   - `--no-enable-prefix-caching`
   - `--max-num-seqs 256`
   - `--max-num-batched-tokens`: vLLM's default, recorded. This is the chunked-prefill budget and a
     key variable for H4, because it sets how much a long prefill can delay decodes.
-  - `--disable-log-requests`
-  - pin the vLLM version: by image digest on a GPU host, by pip version in the Kaggle notebook
+  - pin vLLM and vllm-metal by wheel version (`docs/runbooks/mac.md`)
+- **Run hygiene:** on power, lid open, heavy apps closed, clean tree. Thermal drift > 10%
+  (last rep's TPOT p50 vs the first's), any sleep, or battery power makes a run unreportable.
 
-**GPU budget (rough; recompute after Phase 1 measures real per-request cost):**
+**Machine-time budget** (estimates from `llmserve suite --plan`; recompute per phase):
 
-| Phase | Work | Est. GPU-hours |
+| Phase | Work | Est. machine-hours |
 |---|---|---|
-| 1 | bring-up, 100-request check | 2–3 |
-| 2 | harness validation on real GPU | 2–3 |
-| 3 | E01–E07 × 5 reps, saturation sweeps, bursty | 10–15 |
-| 4 | profiling runs, one Nsight trace | 3–5 |
-| 5 | 3 policies × 3 workloads × 3 loads × 5 reps + cap sweep + vLLM-priority cross-check | 12–18 |
-| 6 | WAAS iteration + ablations | 10–15 |
-| 7 | 180-run matrix + headline 10-rep comparison | 30–40 |
-| **Total** | including about 30% debugging overhead | **≈ 90–130** |
+| 3 | suites (~16 h) + E01–E07 × 5 reps (~9 h) | ≈ 25 |
+| 4 | profiling runs, one Metal trace | 3–5 |
+| 5 | 3 policies × 3 workloads × 3 loads × 5 reps + cap sweep | 20–30 |
+| 6 | WAAS iteration + ablations | 15–25 |
+| 7 | evaluation matrix + headline comparison, resized for the Mac | 40–60 |
 
-E01 (single stream, 128 output tokens) is the slowest per request. If per-request time turns out
-large, cut E01 to 100 requests. Its variance is low, so fewer requests are enough.
-
-Everything except the final numbers can be developed and tested on the mock server (§ Phase 2),
-which keeps the Kaggle quota focused on measurement. Kaggle grants 30 GPU-hours per rolling week
-(ADR-0011), so the ≈ 90–130 GPU-hour plan spans roughly 4–5 quota weeks; sessions cap at 9–12 h,
-and a phase that slips past its session resumes in a fresh notebook.
+Runs are overnight sessions of ≈ 8 h on an otherwise idle Mac. Development and CI run against
+the mock (§ Phase 2); the Mac is used for measurement and for scheduler iteration.
 
 ---
 
@@ -468,14 +462,14 @@ Risks:
 - *The mock gets mistaken for reality.* Mock results never appear in the paper, and they are
   labeled `server.kind: mock` in metadata.
 
-### Phase 3: Baseline characterization (2 weeks, GPU)
+### Phase 3: Baseline characterization (2 weeks, Mac)
 
-*Status:* code complete (October 2026); T4 runs pending. Built: suites with a resumable runner
+*Status:* code complete and sized for the Mac (October 2026); runs pending. Built: suites with a resumable runner
 (`llmserve suite`, `configs/suites/`), the run loader (`analysis/runs.py`), capacity detection,
 H1–H3 verdicts with pre-registered rules, plots, `llmserve report`, the cost model
 (`scheduler/estimators.py`) and mock calibration (`scripts/calibrate_mock.py`). Verified end to
-end on the Mac against vllm-metal (`llmserve report --dev`). Run order, session plan and the open
-E01–E07 budget decision: `docs/runbooks/phase3.md`.
+end on the Mac against vllm-metal. Run order and overnight session plan:
+`docs/runbooks/phase3.md`.
 
 **Goal:** a Baseline Performance Report that tests H1 and H2 and provides the numbers that later
 phases depend on.
@@ -517,24 +511,26 @@ Risks:
   result worth reporting. The research then focuses on queueing under overload (ρ ≥ 0.85) and on
   KV pressure, where admission order still matters.
 
-### Phase 4: GPU profiling (1 week, GPU)
+### Phase 4: Profiling on the Mac (1 week, Mac)
 
-**Goal:** answer "where does time actually go?" (PRD §31).
+**Goal:** answer "where does time actually go?" (PRD §31) on the measurement platform (ADR-0013).
 
 Work items:
-1. Enable DCGM profiling fields (`SM_ACTIVE`, `SM_OCCUPANCY`, `DRAM_ACTIVE`, `PIPE_TENSOR_ACTIVE`)
-   through `dcgm-exporter` where the cloud allows it. **NVML "utilization" only means "a kernel was
-   running"**. It reads close to 100% during memory-bound decode, which misleads. The report states
-   this explicitly.
+1. A `powermetrics` sampler (`metrics/`), the Mac counterpart of the NVML thread: GPU active
+   residency, GPU frequency, CPU/GPU/package power and thermal pressure at 1–10 Hz, written per
+   repetition like `gpu.parquet`. `powermetrics` needs root, so the runbook adds a sudoers rule
+   for it alone. Without the rule the sampler is off and metadata says why. **GPU active
+   residency only means "the GPU was busy"**, like NVML utilization; it reads high during
+   memory-bound decode. The report states this explicitly.
 2. Plots:
-   - GPU utilization vs request rate
+   - GPU active residency vs request rate
    - KV usage vs latency (scatter of `kv_usage_at_dispatch` against TTFT)
-   - memory over time
-   - power, and joules per output token (a stretch metric that falls out of the power samples)
-3. One Nsight Systems trace (`scripts/nsys_profile.sh`) of about 20 s of the mixed workload at
-   ρ = 0.8, plus one vLLM torch-profiler capture (`VLLM_TORCH_PROFILER_DIR`, `/start_profile`,
-   `/stop_profile`). Break a step down into attention, MLP, sampling and CPU scheduling overhead.
-   Show the same breakdown for a prefill-heavy step and a decode-heavy step.
+   - power over time, and joules per output token
+   - GPU frequency and thermal pressure over a long run, next to the thermal-drift check
+3. Explain the TTFT anomaly (ADR-0013): at C ≥ 8, TTFT far exceeds prefill cost (3.5 s at C = 16
+   for a 0.23 s prefill). Use vLLM's `/metrics` queue counts, server logs and one Instruments
+   Metal System Trace of about 20 s of the mixed workload at ρ = 0.8 to find whether new
+   requests wait for running decodes, and how prefill and decode share steps.
 4. Time decomposition per request: queue wait, server-side wait (from vLLM's queue metric),
    prefill, and decode. Show it as stacked bars per workload class.
 5. `llmserve trace <run> --request <id>` prints the PRD §40 timeline.
@@ -627,7 +623,7 @@ Exit check: WAAS beats the best Phase 5 baseline on the targeted metric (for exa
 P95 TTFT) on tuning seeds, with a measured throughput and goodput cost and a verified starvation
 bound. Ablations show which components matter.
 
-### Phase 7: Research evaluation (1–2 weeks, GPU)
+### Phase 7: Research evaluation (1–2 weeks, Mac)
 
 **Goal:** the automated, reproducible evaluation matrix (PRD §34), which tests H5 and H6.
 
@@ -644,9 +640,12 @@ Work items:
    phrases load levels as "concurrency levels"; open-loop ρ is the correct equivalent for
    scheduler evaluation (ADR-003).
 3. Headline comparison: mixed workload at ρ = 0.85 and 0.95, FIFO vs WAAS, 10 paired reps, at least
-   2,000 requests per run.
-4. KV-pressure study (H6): vary KV capacity through `--gpu-memory-utilization` ∈ {0.6, 0.75, 0.9},
-   or through the mix of long-context requests, and show how WAAS's advantage changes.
+   2,000 requests per run. On the Mac (≈ 0.2 req/s for the mixed workload) that is ≈ 55 h for
+   the headline alone, so request counts and the matrix are resized against the §6 budget before
+   Phase 7 runs.
+4. KV-pressure study (H6): vary KV capacity through `--gpu-memory-utilization` ∈ {0.3, 0.4, 0.5}
+   (above 0.5 the Mac pages the pool into swap) and through the share of long-context requests,
+   and show how WAAS's advantage changes.
 5. One public trace replay (for example the Azure LLM inference traces or BurstGPT, license
    permitting) scaled to ρ = 0.85, to address the "synthetic workloads" risk.
 6. Performance regression test (PRD §39): a 5-minute standard workload with stored baseline

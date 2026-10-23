@@ -5,16 +5,17 @@ seed: 42
 repetitions: 5
 
 server:
-  kind: vllm
+  kind: vllm-metal
   endpoint: http://localhost:8000/v1
-  model: Qwen/Qwen2.5-7B-Instruct-AWQ  # §6 re-pin (ADR-0011): INT4 on one T4
+  model: Qwen/Qwen2.5-7B-Instruct-AWQ  # INT4 weights, served by vllm-metal on an M5 (ADR-0013)
   model_revision: b25037543e9394b818fdfca67ab2a00ecc7dd641  # HF commit of Qwen2.5-7B-Instruct-AWQ (2024-10-09)
+  expected_version: "0.31.0"
   prefix_caching: false
 
 load:
   mode: closed
   concurrency: 32
-  requests: 2000
+  requests: 400
 
 workload:
   ref: ../workloads/mixed.yaml

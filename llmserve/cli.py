@@ -231,7 +231,7 @@ def main(argv: list[str] | None = None) -> None:
     report.add_argument(
         "--dev",
         action="store_true",
-        help="include non-reportable runs (mock, vllm-metal, dirty, invalid) under a banner",
+        help="include non-reportable runs (non-vllm-metal, dirty, invalid, drifted) under a banner",
     )
     args = parser.parse_args(argv)
     if args.command == "validate":

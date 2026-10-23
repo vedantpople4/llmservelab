@@ -5,9 +5,10 @@ omitted — "present but null" is what makes the exit check's field-by-field com
 
 Captured here: identity (run/config/git), the machine (host, platform, Python), the GPU (NVML,
 best-effort), the resolved server/gateway/measurement settings, the seed's child keys, the clock
-anchor (ADR-0006), which samplers ran (with their requested rates and any failure), and the
-warm-up's outcome. vLLM's launch args and the docker-side sizing flags are deployment facts
-this process does not own, so they are null until the harness launches the server itself.
+anchor (ADR-0006), which samplers ran (with their requested rates and any failure), the
+warm-up's outcome, and on a Mac the time spent asleep and the power source. vLLM's launch args
+and the docker-side sizing flags are deployment facts this process does not own, so they are null
+until the harness launches the server itself.
 """
 
 from __future__ import annotations
@@ -90,11 +91,14 @@ def build_metadata(
     warmup: dict[str, Any],
     backend_version: dict[str, Any],
     samplers: dict[str, Any],
+    sleep: dict[str, Any],
+    power_source: dict[str, Any],
 ) -> dict[str, Any]:
     """Assemble `metadata.json`. `endpoint` is the one actually driven (CLI `--endpoint`).
 
-    `samplers` comes from the run (`active`, requested rates, and any `errors`), so this
-    function only places it.
+    `samplers` (`active`, requested rates, any `errors`), `sleep` (seconds the Mac slept, in total
+    and per rep) and `power_source` (at start and end) come from the run, so this function only
+    places them.
     """
     return {
         "run_id": run_id,
@@ -161,4 +165,6 @@ def build_metadata(
         "clock_anchor_ns": clock_anchor_ns,
         "monotonic_clock": "time.perf_counter_ns, relative to run start (ADR-0006)",
         "samplers": samplers,
+        "sleep": sleep,
+        "power_source": power_source,
     }

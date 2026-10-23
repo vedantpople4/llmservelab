@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+from typing import Any
 
 from conftest import RunFactory, experiment_config
 
@@ -51,21 +52,72 @@ def test_mock_runs_are_never_reportable(run_factory: RunFactory) -> None:
     assert run.reportable is False
 
 
-def test_reportable_needs_vllm_a_clean_tree_and_a_valid_summary(tmp_path: Path) -> None:
-    run_dir = tmp_path / "e01" / "20261019T000000Z-aaaaaaaa-bbbbbbb"
-    run_dir.mkdir(parents=True)
+def _written_run(
+    root: Path,
+    *,
+    dirty: bool = False,
+    invalid: bool = False,
+    tpots: tuple[float, ...] = (),
+    metadata: dict[str, Any] | None = None,
+) -> Run:
+    run_dir = root / "e01" / "20261019T000000Z-aaaaaaaa-bbbbbbb"
+    run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "config.resolved.yaml").write_text(
         "schema_version: 1\nexperiment: e01\nseed: 1\n"
-        "server: {kind: vllm, endpoint: 'http://x/v1', model: m}\n"
+        "server: {kind: vllm-metal, endpoint: 'http://x/v1', model: m}\n"
         "load: {mode: closed, concurrency: 1, requests: 1}\n"
         "workload: {classes: [{name: c, prompt: {distribution: fixed, tokens: 1},"
         " output: {distribution: fixed, tokens: 1}}]}\n"
     )
+    per_rep = [{"latency": {"tpot_s": {"p50": t}}} for t in tpots]
+    (run_dir / "metadata.json").write_text(json.dumps({"git_dirty": dirty, **(metadata or {})}))
+    (run_dir / "summary.json").write_text(json.dumps({"invalid": invalid, "per_rep": per_rep}))
+    return Run(run_dir)
+
+
+def test_reportable_needs_vllm_metal_a_clean_tree_and_a_valid_summary(tmp_path: Path) -> None:
     cases = ((False, False, True), (True, False, False), (False, True, False))
     for dirty, invalid, expected in cases:
-        (run_dir / "metadata.json").write_text(json.dumps({"git_dirty": dirty}))
-        (run_dir / "summary.json").write_text(json.dumps({"invalid": invalid, "per_rep": []}))
-        assert Run(run_dir).reportable is expected
+        assert _written_run(tmp_path, dirty=dirty, invalid=invalid).reportable is expected
+
+
+def test_more_than_ten_percent_thermal_drift_is_unreportable(tmp_path: Path) -> None:
+    run = _written_run(tmp_path, tpots=(0.020, 0.021, 0.0222))
+    assert math.isclose(run.thermal_drift or 0.0, 0.11)
+    assert run.unreportable_reasons == ["thermal drift +11% (last rep vs first, TPOT p50)"]
+
+
+def test_drift_under_ten_percent_is_reportable(tmp_path: Path) -> None:
+    run = _written_run(tmp_path, tpots=(0.020, 0.025, 0.0218))
+    assert math.isclose(run.thermal_drift or 0.0, 0.09)
+    assert run.reportable is True
+
+
+def test_a_single_rep_has_no_drift_and_stays_reportable(tmp_path: Path) -> None:
+    run = _written_run(tmp_path, tpots=(0.020,))
+    assert run.thermal_drift is None
+    assert run.reportable is True
+
+
+def test_a_run_that_slept_more_than_a_second_is_unreportable(tmp_path: Path) -> None:
+    run = _written_run(tmp_path, metadata={"sleep": {"total_s": 3612.4, "per_rep_s": [3612.4]}})
+    assert run.unreportable_reasons == ["Mac slept 3612 s during the run"]
+    assert _written_run(tmp_path, metadata={"sleep": {"total_s": 0.8}}).reportable is True
+
+
+def test_a_run_that_started_or_ended_on_battery_is_unreportable(tmp_path: Path) -> None:
+    ac, batt = "AC Power", "Battery Power"
+    for start, end in ((batt, ac), (ac, batt), (batt, batt)):
+        run = _written_run(tmp_path, metadata={"power_source": {"start": start, "end": end}})
+        assert run.unreportable_reasons == ["ran on battery power"]
+    on_ac = _written_run(tmp_path, metadata={"power_source": {"start": ac, "end": ac}})
+    assert on_ac.reportable is True
+
+
+def test_unknown_sleep_and_power_are_not_reasons(tmp_path: Path) -> None:
+    unknown = {"sleep": {"total_s": None}, "power_source": {"start": None, "end": None}}
+    assert _written_run(tmp_path, metadata=unknown).reportable is True
+    assert _written_run(tmp_path).reportable is True  # a run from before these fields existed
 
 
 def test_rep_metric_reads_one_value_per_rep(run_factory: RunFactory) -> None:

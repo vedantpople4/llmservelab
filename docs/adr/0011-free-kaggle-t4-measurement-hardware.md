@@ -1,6 +1,6 @@
 # ADR-0011: Free Kaggle T4 is the measurement hardware
 
-Status: accepted (September 2026)
+Status: superseded by ADR-0013 (October 2026)
 
 ## Context
 

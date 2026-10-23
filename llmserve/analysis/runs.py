@@ -4,9 +4,9 @@ A `Run` is one run directory written by `runner/experiment.py` (layout in `runne
 Requests are rebuilt as `RequestRecord`s and pushed through `aggregate.window_of`, so analysis
 uses exactly the steady window the runner summarized — one definition of "measured".
 
-Reportability is decided here (ADR-009, ADR-0012): only `server.kind == "vllm"` runs from a
-clean tree whose summary is valid may appear in a report. Everything else is a development
-result.
+Reportability is decided here (ADR-009, ADR-0013): only `server.kind == "vllm-metal"` runs
+from a clean tree, with a valid summary, no thermal drift, no system sleep and on AC power, may
+appear in a report. Everything else is a development result.
 """
 
 from __future__ import annotations
@@ -26,7 +26,11 @@ from llmserve.config.loader import load_config
 from llmserve.config.schema import ExperimentConfig
 from llmserve.metrics import latency
 from llmserve.metrics.records import Chunk, RequestRecord, RequestStatus
+from llmserve.runner.macos import BATTERY_POWER
 
+MEASUREMENT_KIND = "vllm-metal"
+MAX_THERMAL_DRIFT = 0.10
+MAX_SLEPT_S = 1.0
 _NS = 1e9
 _RECORD_FIELDS = {f.name for f in fields(RequestRecord)} - {"status", "chunks", "extra"}
 
@@ -60,17 +64,36 @@ class Run:
     def unreportable_reasons(self) -> list[str]:
         """Why this run may not appear in a report; empty exactly when it may."""
         reasons = []
-        if self.config.server.kind != "vllm":
-            reasons.append(f"server.kind is {self.config.server.kind}, not vllm")
+        if self.config.server.kind != MEASUREMENT_KIND:
+            reasons.append(f"server.kind is {self.config.server.kind}, not {MEASUREMENT_KIND}")
         if self.metadata.get("git_dirty") is not False:
             reasons.append("git tree dirty or unknown")
         if self.summary["invalid"]:
             reasons.append("summary invalid (> 1% failed requests)")
+        drift = self.thermal_drift
+        if drift is not None and drift > MAX_THERMAL_DRIFT:
+            reasons.append(f"thermal drift {drift:+.0%} (last rep vs first, TPOT p50)")
+        # Runs from before these fields existed carry no evidence either way.
+        slept = (self.metadata.get("sleep") or {}).get("total_s")
+        if slept is not None and slept > MAX_SLEPT_S:
+            reasons.append(f"Mac slept {slept:.0f} s during the run")
+        power = self.metadata.get("power_source") or {}
+        if BATTERY_POWER in (power.get("start"), power.get("end")):
+            reasons.append("ran on battery power")
         return reasons
 
     @property
     def reportable(self) -> bool:
         return not self.unreportable_reasons
+
+    @property
+    def thermal_drift(self) -> float | None:
+        """Last rep's TPOT p50 over the first's, minus 1: the fanless Mac slowing as it heats.
+        None with fewer than two reps or a missing value."""
+        tpots = [rep["latency"]["tpot_s"]["p50"] for rep in self.summary["per_rep"]]
+        if len(tpots) < 2 or tpots[0] is None or tpots[-1] is None:
+            return None
+        return float(tpots[-1]) / float(tpots[0]) - 1
 
     def rep_dirs(self) -> list[Path]:
         return sorted(p for p in self.path.glob("rep-*") if p.is_dir())

@@ -1,6 +1,6 @@
 # ADR-0012: vllm-metal on a Mac is the scheduler development platform
 
-Status: accepted (October 2026)
+Status: accepted (October 2026); its "never reported" rule is superseded by ADR-0013
 
 ## Context
 

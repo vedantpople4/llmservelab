@@ -267,9 +267,10 @@ class Hardware:
 
 # T4 + Qwen2.5-7B AWQ, from `scripts/envelope.py --preset t4`.
 T4 = Hardware(prefill_s_per_token=0.06 / 128, tpot_batch1_s=0.022, tpot_ref_s=0.060, ref_batch=128)
-# M5 MacBook + vllm-metal, measured (ADR-0012): ~21 tok/s single stream, TTFT ~230 ms at 128.
+# M5 MacBook Air + vllm-metal 0.31.0, closed-loop probes (ADR-0013): prefill ~700 tok/s at
+# 2K-8K prompts; TPOT p50 47 ms at batch 1, 200 / 292 / 537 ms at 16 / 32 / 64.
 M5_METAL = Hardware(
-    prefill_s_per_token=0.23 / 128, tpot_batch1_s=0.047, tpot_ref_s=0.139, ref_batch=8
+    prefill_s_per_token=1 / 700, tpot_batch1_s=0.047, tpot_ref_s=0.537, ref_batch=64
 )
 HARDWARE: dict[str, Hardware] = {"vllm": T4, "vllm-metal": M5_METAL}
 RUN_OVERHEAD_S = 30.0  # process start, settle, metadata

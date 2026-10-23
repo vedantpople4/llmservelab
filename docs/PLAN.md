@@ -27,16 +27,17 @@ System Design section, because a reviewer will ask about it.
 
 ### 2. Where do experiments run?
 
-A Mac has no CUDA, so vLLM benchmarks need a GPU. The plan is Kaggle's free notebooks — one
-Tesla T4 with `Qwen2.5-7B-Instruct-AWQ`, 30 GPU-hours per rolling week (ADR-0011,
-`docs/runbooks/kaggle.md`). A rented 24 GB card stays the fallback if the quota runs out.
-To keep GPU hours low:
+On one M5 MacBook Air (24 GB) running upstream vLLM through vllm-metal, serving
+`Qwen2.5-7B-Instruct-AWQ` at a pinned revision (ADR-0013, `docs/runbooks/mac.md`). The plan
+first chose a free Kaggle/Colab T4 (ADR-0011); that route never produced a run and is kept only
+as unused code. Consequences:
 
-- Build a **mock OpenAI-compatible streaming server** (`scripts/mock_server.py`) whose TTFT grows
-  with prompt length and whose per-token delay grows with concurrency. Develop and test the whole
-  harness on the laptop against it.
-- Rent the GPU only for real runs, and keep one hardware SKU for the whole study. Record it in the
-  metadata.
+- Findings are about one Apple-silicon machine. The paper says transfer to datacenter GPUs is
+  untested.
+- Configs are sized for the Mac's measured capacity, and a run is unreportable if the Mac drifts
+  thermally, sleeps or runs on battery.
+- The **mock server** (`llmserve/mock/`) still carries harness development and CI, where there
+  is no vLLM.
 
 ## Phases and milestones
 
@@ -48,10 +49,10 @@ Each milestone ends with a check that can be verified. Rough time estimates assu
 | 1 | Serving baseline | vLLM + one 7B model in Docker on a GPU; streaming client records per-token timestamps; 100 sequential requests, 0 unexplained failures | 1 wk |
 | 2 | Benchmark harness | `llmserve benchmark configs/baseline/e01.yaml` runs warm-up → workload → Parquet + `metadata.json` (git commit, GPU, CUDA, driver, vLLM version, seed). Workload generator is deterministic under a seed (unit-tested). Mock server lets this run on the laptop | 2 wk |
 | 3 | Baseline characterization | E01–E07 × 5 reps; plots of latency/throughput vs concurrency, prompt length vs TTFT; bursty and mixed runs. Verify H1 and H2. **Deliverable: Baseline Performance Report** | 2 wk |
-| 4 | GPU profiling | NVML sampler (util, mem, power) + scraping vLLM `/metrics` (KV-cache usage, running/waiting); one Nsight Systems trace explaining where time goes | 1 wk |
+| 4 | Profiling | `powermetrics` sampler (GPU active residency, frequency, power, thermal pressure) + scraping vLLM `/metrics` (KV-cache usage, running/waiting); one Instruments Metal trace explaining where time goes, including why TTFT at C ≥ 8 exceeds prefill cost (ADR-0013) | 1 wk |
 | 5 | Scheduling baselines | Gateway with in-flight cap; FIFO, ShortestPromptFirst, Priority behind the `Scheduler` interface; compared on identical seeded workloads. Find the concrete weakness (likely head-of-line blocking of short requests behind long prefills) | 2 wk |
 | 6 | WAAS | Scheduler designed from the Phase 5 evidence. Include starvation protection (age term) and run the oracle / estimated / no output-length ablation | 2–3 wk |
-| 7 | Evaluation | Automated matrix (3 schedulers × 4 workloads × 5 concurrencies × 3 reps); report means, P50/P95/P99, CIs, and throughput cost next to latency gains | 1–2 wk |
+| 7 | Evaluation | Automated matrix (3 schedulers × 4 workloads × 5 load levels × 3 reps, resized for the Mac before it runs); report means, P50/P95/P99, CIs, and throughput cost next to latency gains. H6 varies KV capacity below `--gpu-memory-utilization 0.5` (0.3 / 0.4 / 0.5) and the long-context share | 1–2 wk |
 | 8 | Report + release | `make reproduce`, 8–12 page paper, README findings filled with measured numbers only | 2 wk |
 
 MVP = end of Phase 4 (PRD §42). Version 1.0 = end of Phase 8.
