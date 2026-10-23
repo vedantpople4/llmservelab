@@ -44,6 +44,16 @@ Read ρ = 1 for steps 7 and 8 from the report's capacity table: run `llmserve re
 docs/reports` after step 3. If the table says the sweep did not bracket capacity, widen the
 rates in the capacity suite and rerun it before going on.
 
+Run a session as one command under `caffeinate -i`, so the Mac cannot idle-sleep between
+suites. Session 1, for example:
+
+```bash
+caffeinate -i sh -c 'for s in capacity_p128 capacity_mixed capacity_interactive \
+    prompt_length output_length bursty; do
+  uv run llmserve suite configs/suites/$s.yaml
+done'
+```
+
 Suggested overnight sessions of about 8 hours:
 
 1. Steps 1–6 (~5.9 h).

@@ -46,7 +46,10 @@ page into swap. Close apps or lower `--gpu-memory-utilization`.
 A run is unreportable if the Mac drifts thermally, sleeps, or runs on battery (ADR-0013), so:
 
 - Plug in the charger and keep the lid open. A closed lid sleeps the Mac even mid-run, and
-  `caffeinate` (which runs hold automatically) only prevents idle sleep.
+  `caffeinate` only prevents idle sleep.
+- Each `llmserve` command holds `caffeinate -i` until it exits. Between two commands nothing
+  does, and a Mac that has been idle for a while sleeps at once, so run a session of several
+  commands under one `caffeinate -i` (see [phase3.md](phase3.md)).
 - Quit heavy apps. The server shares unified memory with everything else, and background load
   shows up as latency.
 - Commit first. Runs from a dirty tree are unreportable.

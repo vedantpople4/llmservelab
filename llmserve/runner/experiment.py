@@ -97,7 +97,7 @@ async def run_experiment(
     power_start = macos.power_source()
     if power_start == macos.BATTERY_POWER:
         progress("WARNING on battery power: this run will not be reportable")
-    release_awake = macos.keep_awake(progress)
+    macos.keep_awake(progress)
     try:
         samplers = _Samplers(
             cfg,
@@ -195,7 +195,6 @@ async def run_experiment(
         )
         return run_dir, cross
     finally:
-        release_awake()
         if own_client:
             await client.aclose()
 

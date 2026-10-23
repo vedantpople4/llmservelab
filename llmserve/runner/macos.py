@@ -22,8 +22,10 @@ SleepMark = tuple[int, int]  # (CLOCK_MONOTONIC ns, CLOCK_UPTIME_RAW ns)
 
 
 class _Process(Protocol):
-    def terminate(self) -> None: ...
-    def wait(self, timeout: float | None = None) -> int: ...
+    def poll(self) -> int | None: ...
+
+
+_held: _Process | None = None
 
 
 def is_darwin() -> bool:
@@ -72,26 +74,22 @@ def _pmset_batt() -> str | None:
     return proc.stdout if proc.returncode == 0 else None
 
 
-def keep_awake(progress: Callable[[str], None]) -> Callable[[], None]:
-    """Hold `caffeinate -i` for this process's lifetime; returns the function that releases it.
+def keep_awake(progress: Callable[[str], None]) -> None:
+    """Hold `caffeinate -i -w <pid>` from the first run until this process exits.
 
-    `-i` prevents idle sleep only; closing the lid still sleeps the Mac, which `slept_s` records.
-    `-w <pid>` ends caffeinate with us even if release never runs.
+    Never released per run: a Mac that sat idle while a run held it sleeps the instant the hold
+    drops, so a per-run hold let a suite sleep between two points. `-i` prevents idle sleep
+    only; closing the lid still sleeps the Mac, which `slept_s` records.
     """
-    if not is_darwin():
-        return lambda: None
+    global _held
+    if not is_darwin() or _held is not None:
+        return
     try:
-        proc = _spawn(["caffeinate", "-i", "-w", str(os.getpid())])
+        _held = _spawn(["caffeinate", "-i", "-w", str(os.getpid())])
     except OSError as e:
         progress(f"caffeinate unavailable ({e}); the Mac may idle-sleep during the run")
-        return lambda: None
-    progress("caffeinate -i held for the run (a closed lid still sleeps the Mac)")
-
-    def release() -> None:
-        proc.terminate()
-        proc.wait(timeout=5)
-
-    return release
+        return
+    progress("caffeinate -i held until this process exits (a closed lid still sleeps the Mac)")
 
 
 def _spawn(argv: list[str]) -> _Process:
