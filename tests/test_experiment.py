@@ -66,6 +66,8 @@ METADATA_KEYS = (
     "clock_anchor_ns",
     "monotonic_clock",
     "samplers",
+    "sleep",
+    "power_source",
 )
 
 

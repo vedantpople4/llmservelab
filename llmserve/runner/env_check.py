@@ -21,6 +21,7 @@ from llmserve.client.capabilities import Capabilities, capabilities
 from llmserve.client.openai_stream import stream_completion
 from llmserve.config.schema import ExperimentConfig
 from llmserve.metrics import latency
+from llmserve.runner import macos
 from llmserve.runner.clock import RunClock
 from llmserve.workload.spec import RequestSpec
 
@@ -112,6 +113,7 @@ async def check_server(
 
         prefix_note = await _check_prefix_cache(cfg, caps, probe, client, failures, checks, target)
         gpu_idle = _check_gpu(caps, failures, checks)
+        _check_power(checks)
     finally:
         if owns_client:
             await client.aclose()
@@ -273,6 +275,19 @@ def _check_gpu(caps: Capabilities, failures: list[str], checks: list[str]) -> bo
         return False
     checks.append(f"GPU idle ({util:.0f}%)")
     return True
+
+
+def _check_power(checks: list[str]) -> None:
+    """A warning, not a failure: a battery run still completes, it just cannot be reported."""
+    if not macos.is_darwin():
+        return
+    source = macos.power_source()
+    if source is None:
+        checks.append("power source unknown (pmset gave no answer)")
+    elif source == macos.BATTERY_POWER:
+        checks.append("WARNING on battery power: runs will not be reportable")
+    else:
+        checks.append(f"power {source}")
 
 
 def settled_gpu_utilization() -> float | None:

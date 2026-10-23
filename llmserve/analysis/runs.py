@@ -5,8 +5,8 @@ Requests are rebuilt as `RequestRecord`s and pushed through `aggregate.window_of
 uses exactly the steady window the runner summarized — one definition of "measured".
 
 Reportability is decided here (ADR-009, ADR-0013): only `server.kind == "vllm-metal"` runs
-from a clean tree, with a valid summary and no thermal drift, may appear in a report. Everything
-else is a development result.
+from a clean tree, with a valid summary, no thermal drift, no system sleep and on AC power, may
+appear in a report. Everything else is a development result.
 """
 
 from __future__ import annotations
@@ -26,9 +26,11 @@ from llmserve.config.loader import load_config
 from llmserve.config.schema import ExperimentConfig
 from llmserve.metrics import latency
 from llmserve.metrics.records import Chunk, RequestRecord, RequestStatus
+from llmserve.runner.macos import BATTERY_POWER
 
 MEASUREMENT_KIND = "vllm-metal"
 MAX_THERMAL_DRIFT = 0.10
+MAX_SLEPT_S = 1.0
 _NS = 1e9
 _RECORD_FIELDS = {f.name for f in fields(RequestRecord)} - {"status", "chunks", "extra"}
 
@@ -71,6 +73,13 @@ class Run:
         drift = self.thermal_drift
         if drift is not None and drift > MAX_THERMAL_DRIFT:
             reasons.append(f"thermal drift {drift:+.0%} (last rep vs first, TPOT p50)")
+        # Runs from before these fields existed carry no evidence either way.
+        slept = (self.metadata.get("sleep") or {}).get("total_s")
+        if slept is not None and slept > MAX_SLEPT_S:
+            reasons.append(f"Mac slept {slept:.0f} s during the run")
+        power = self.metadata.get("power_source") or {}
+        if BATTERY_POWER in (power.get("start"), power.get("end")):
+            reasons.append("ran on battery power")
         return reasons
 
     @property

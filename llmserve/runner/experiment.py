@@ -35,7 +35,7 @@ from llmserve.config.loader import config_hash
 from llmserve.config.schema import ExperimentConfig, Load
 from llmserve.metrics.gpu import GpuSampler
 from llmserve.metrics.server import ServerSampler, lookup, parse_prometheus
-from llmserve.runner import storage
+from llmserve.runner import macos, storage
 from llmserve.runner.clock import RunClock
 from llmserve.runner.env_check import GPU_IDLE_UTIL_PCT, base_url, settled_gpu_utilization
 from llmserve.runner.metadata import build_metadata, git_state
@@ -93,6 +93,11 @@ async def run_experiment(
     own_client = client is None
     if client is None:
         client = httpx.AsyncClient()
+    run_mark = macos.sleep_mark()
+    power_start = macos.power_source()
+    if power_start == macos.BATTERY_POWER:
+        progress("WARNING on battery power: this run will not be reportable")
+    release_awake = macos.keep_awake(progress)
     try:
         samplers = _Samplers(
             cfg,
@@ -115,6 +120,7 @@ async def run_experiment(
             progress=progress,
         )
         summaries: list[dict[str, Any]] = []
+        slept_per_rep: list[float | None] = []
         for rep in range(cfg.repetitions):
             workload = materialize(cfg, rep=rep, builder=builder)
             rep_path = storage.rep_dir(run_dir, rep)
@@ -123,6 +129,7 @@ async def run_experiment(
             if rep == 0:
                 save_workload(workload, run_dir / "workload.parquet")
 
+            rep_mark = macos.sleep_mark()
             t0_ns = clock()
             gpu, server, events = await samplers.start()
             try:
@@ -137,6 +144,8 @@ async def run_experiment(
                 )
             finally:
                 counts = await samplers.stop(gpu, server, events, rep_path)  # flush on a crash too
+            slept = macos.slept_s(rep_mark)
+            slept_per_rep.append(slept)
             window = window_of(records, cfg, t0_ns=t0_ns)
             summary = summarize(records, rep=rep, window=window)
             storage.write_requests(rep_path / "requests.parquet", records, run_id=run_id, rep=rep)
@@ -144,6 +153,8 @@ async def run_experiment(
             storage.write_json(summary, rep_path / "summary.json")
             summaries.append(summary)
             note = " (INVALID: >1% failures)" if summary["invalid"] else ""
+            if slept is not None and slept >= 1:
+                note += f" (Mac slept {slept:.0f} s)"
             progress(
                 f"rep {rep + 1}/{cfg.repetitions}: "
                 f"{summary['n_ok']}/{summary['n_requests']} ok{note} · "
@@ -173,11 +184,18 @@ async def run_experiment(
                     "dcgm": cfg.measurement.samplers.dcgm,
                     "errors": samplers.errors,
                 },
+                sleep={
+                    "total_s": macos.slept_s(run_mark),
+                    "per_rep_s": slept_per_rep,
+                    "method": "delta CLOCK_MONOTONIC - delta CLOCK_UPTIME_RAW (Darwin only)",
+                },
+                power_source={"start": power_start, "end": macos.power_source()},
             ),
             run_dir / "metadata.json",
         )
         return run_dir, cross
     finally:
+        release_awake()
         if own_client:
             await client.aclose()
 
