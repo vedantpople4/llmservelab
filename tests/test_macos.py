@@ -27,21 +27,22 @@ S = 1_000_000_000
 
 
 class FakeCaffeinate:
+    """Alive until the test says the owning process exited; real caffeinate -w does that."""
+
     def __init__(self) -> None:
-        self.argv: list[str] | None = None
-        self.terminated = False
-        self.waited = False
+        self.spawns: list[list[str]] = []
+        self.exited = False
 
     def spawn(self, argv: list[str]) -> FakeCaffeinate:
-        self.argv = argv
+        self.spawns.append(argv)
         return self
 
-    def terminate(self) -> None:
-        self.terminated = True
+    def poll(self) -> int | None:
+        return 0 if self.exited else None
 
-    def wait(self, timeout: float | None = None) -> int:
-        self.waited = True
-        return 0
+    @property
+    def holding(self) -> bool:
+        return len(self.spawns) == 1 and not self.exited
 
 
 def on_a_mac(monkeypatch: pytest.MonkeyPatch, *, pmset: str = AC) -> FakeCaffeinate:
@@ -49,6 +50,7 @@ def on_a_mac(monkeypatch: pytest.MonkeyPatch, *, pmset: str = AC) -> FakeCaffein
     monkeypatch.setattr(macos, "is_darwin", lambda: True)
     monkeypatch.setattr(macos, "_pmset_batt", lambda: pmset)
     monkeypatch.setattr(macos, "_spawn", caffeinate.spawn)
+    monkeypatch.setattr(macos, "_held", None)  # a fresh process
     return caffeinate
 
 
@@ -82,24 +84,25 @@ def test_power_source_is_unknown_off_darwin(monkeypatch: pytest.MonkeyPatch) -> 
     assert macos.power_source() is None
 
 
-def test_caffeinate_is_held_for_exactly_the_run(
+def test_caffeinate_is_held_through_every_run_of_the_process(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     caffeinate = on_a_mac(monkeypatch)
     held_during_reps: list[bool] = []
 
     async def drive(*args: Any, **kwargs: Any) -> Any:
-        held_during_reps.append(caffeinate.argv is not None and not caffeinate.terminated)
+        held_during_reps.append(caffeinate.holding)
         return await real_drive(*args, **kwargs)
 
     monkeypatch.setattr(experiment, "drive", drive)
-    run_in_process(make_cfg(), tmp_path, allow_dirty=True)
-    assert caffeinate.argv == ["caffeinate", "-i", "-w", str(os.getpid())]
-    assert held_during_reps == [True, True, True]  # warm-up and both reps
-    assert caffeinate.terminated and caffeinate.waited
+    run_in_process(make_cfg(), tmp_path / "a", allow_dirty=True)
+    run_in_process(make_cfg(), tmp_path / "b", allow_dirty=True)  # the next point of a suite
+    assert caffeinate.spawns == [["caffeinate", "-i", "-w", str(os.getpid())]]
+    assert held_during_reps == [True] * 6  # warm-up and both reps, twice
+    assert caffeinate.holding  # still held between and after runs; it ends with the process
 
 
-def test_caffeinate_is_released_when_the_run_crashes(
+def test_caffeinate_stays_held_when_a_run_crashes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     caffeinate = on_a_mac(monkeypatch)
@@ -110,7 +113,7 @@ def test_caffeinate_is_released_when_the_run_crashes(
     monkeypatch.setattr(experiment, "drive", drive)
     with pytest.raises(httpx.ConnectError):
         run_in_process(make_cfg(), tmp_path, allow_dirty=True)
-    assert caffeinate.terminated
+    assert caffeinate.holding
 
 
 def test_missing_caffeinate_is_noted_and_the_run_continues(
