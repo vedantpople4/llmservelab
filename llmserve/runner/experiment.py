@@ -107,7 +107,11 @@ async def run_experiment(
 
     owned: list[httpx.AsyncClient] = []
     if client is None:
-        client = httpx.AsyncClient()
+        # The load sets concurrency; httpx's default 100-connection pool would silently cap it.
+        # Per-request timeouts (`request_timeout_s`) still bound each request.
+        client = httpx.AsyncClient(
+            limits=httpx.Limits(max_connections=None, max_keepalive_connections=None)
+        )
         owned.append(client)
     if metrics_client is None:
         # Its own pool: on a shared one, scrapes queue behind open streams and hit PoolTimeout.

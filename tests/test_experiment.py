@@ -387,6 +387,71 @@ def test_metrics_scrapes_do_not_queue_behind_benchmark_streams(tmp_path: Path) -
     assert pq.read_table(run_dir / "rep-00" / "server.parquet").num_rows >= 20
 
 
+class _InFlight:
+    """ASGI wrapper counting concurrent `/v1/completions` requests as the server sees them."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+        self.now = 0
+        self.peak = 0
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http" or scope["path"] != "/v1/completions":
+            await self.app(scope, receive, send)
+            return
+        self.now += 1
+        self.peak = max(self.peak, self.now)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            self.now -= 1
+
+
+def _slow_run_over_tcp(
+    tmp_path: Path, *, concurrency: int, request_timeout_s: float = 600
+) -> tuple[dict[str, Any], int]:
+    """Run with the runner's own clients against a TCP mock where each measured request spends
+    ~1 s in prefill (probes stay short); returns the cross-rep summary and the server's peak
+    in-flight count."""
+    raw = make_cfg().canonical()
+    raw.update(repetitions=1)
+    raw["load"].update(concurrency=concurrency, requests=concurrency)
+    raw["workload"]["classes"][0]["prompt"]["tokens"] = 2048
+    raw["measurement"].update(
+        warmup={"requests": 0},
+        samplers={"gpu_hz": 0, "server_hz": 0},
+        request_timeout_s=request_timeout_s,
+    )
+    cfg = ExperimentConfig.model_validate(raw)
+    delay = DelayModel(
+        ttft_base_s=0.0, ttft_per_prompt_token_s=5e-4, token_base_s=0.001, token_in_flight_s=0.0
+    )
+    server = _InFlight(create_app(MockEngine(delay=delay)))
+    with served_over_tcp(server) as base:
+        _, cross = asyncio.run(
+            run_experiment(
+                cfg,
+                out_root=tmp_path / "results",
+                endpoint=f"{base}/v1",
+                builder=make_builder(),
+                allow_dirty=True,
+            )
+        )
+    return cross, server.peak
+
+
+def test_the_runners_client_never_caps_in_flight_requests(tmp_path: Path) -> None:
+    # httpx's default pool holds 100 connections, which silently capped every load above 100.
+    cross, peak = _slow_run_over_tcp(tmp_path, concurrency=150)
+    assert cross["success_rate"]["mean"] == 1.0
+    assert peak == 150
+
+
+def test_the_runners_client_still_times_requests_out(tmp_path: Path) -> None:
+    cross, _ = _slow_run_over_tcp(tmp_path, concurrency=2, request_timeout_s=0.2)
+    assert cross["success_rate"]["mean"] == 0.0
+
+
 def test_open_benchmark_trims_the_steady_window(tmp_path: Path) -> None:
     cfg = make_cfg(open_loop=True)
     run_dir, cross = run_in_process(cfg, tmp_path, allow_dirty=True)
