@@ -42,7 +42,7 @@ from llmserve.analysis.hypotheses import (
 from llmserve.analysis.runs import Run, latest_run
 from llmserve.analysis.stats import Estimate, mean_ci
 from llmserve.analysis.suites import SuiteRuns, load_suite_runs, suite_file_for, sweep_table
-from llmserve.scheduler.estimators import CostModel, DecodeFit, fit_decode
+from llmserve.scheduler.estimators import CostModel, DecodeFit, PrefillFit, fit_decode
 
 DEV_BANNER = "DEVELOPMENT RESULTS — not reportable (ADR-0009/0013)"
 
@@ -175,7 +175,7 @@ def build_report(results_root: Path, out_dir: Path, *, dev: bool = False) -> Pat
     ]
     body = [
         *_baseline_section(r),
-        *_capacity_section(r),
+        *_capacity_section(r, prefill_fit(verdicts[2])),
         *_concurrency_section(r, verdicts[0]),
         *_prompt_section(r, prompt, verdicts[2]),
         *_output_section(r),
@@ -270,8 +270,17 @@ def _baseline_section(r: _Report) -> list[str]:
     return lines
 
 
-def _capacity_section(r: _Report) -> list[str]:
-    lines = ["## Capacity (ρ = 1)", "", "| Workload | ρ = 1 (req/s) | Bracketed | Note |"]
+def _capacity_section(r: _Report, prefill: PrefillFit | None) -> list[str]:
+    lines = [
+        "## Capacity (ρ = 1)",
+        "",
+        "The queueing test was amended in October 2026 to compare slowdown (TTFT ÷ the H3 fit's "
+        "unloaded TTFT for the prompt length) instead of raw TTFT, because at low rates a "
+        "heterogeneous prompt mix moves the raw median of each third with whichever long "
+        "prompts land in it.",
+        "",
+        "| Workload | ρ = 1 (req/s) | Bracketed | Note |",
+    ]
     lines.append("|---|---|---|---|")
     details: list[str] = []
     for workload, name in CAPACITY:
@@ -279,7 +288,7 @@ def _capacity_section(r: _Report) -> list[str]:
         if suite is None or not suite.points:
             lines.append(f"| {workload} | — | — | {r.missing((name,))} |")
             continue
-        cap = find_capacity(capacity_points(suite))
+        cap = find_capacity(capacity_points(suite, prefill))
         r.cite(f"table: capacity ({workload})", f"Capacity evidence, {workload}", [suite])
         rate = f"{cap.rate_rps:g}" if cap.rate_rps is not None else "—"
         lines.append(f"| {workload} | {rate} | {'yes' if cap.bracketed else 'no'} | {cap.note} |")
@@ -289,19 +298,20 @@ def _capacity_section(r: _Report) -> list[str]:
 
 def _capacity_evidence(workload: str, cap: Capacity) -> list[str]:
     lines = [
-        f"**{workload}:** per offered rate (sustained iff completion ratio ≥ 0.95 and TTFT "
-        "growth ≤ 2).",
+        f"**{workload}:** per offered rate (sustained iff completion ratio ≥ 0.95 and slowdown "
+        "growth ≤ 2, raw TTFT growth without a prefill fit).",
         "",
         "| Offered (req/s) | Arrived (req/s) | Achieved (req/s) | Completion ratio "
-        "| TTFT growth | Sustained |",
-        "|---|---|---|---|---|---|",
+        "| TTFT growth | Slowdown growth | Sustained |",
+        "|---|---|---|---|---|---|---|",
     ]
     for e in cap.evidence:
         p = e.point
         lines.append(
             f"| {p.offered_rps:g} | {p.arrived_rps:.3g} | {p.achieved_rps:.3g} "
             f"| {e.completion_ratio:.3f} "
-            f"| {_num(p.ttft_growth, '.2f')} | {'yes' if e.sustained else 'no'} |"
+            f"| {_num(p.ttft_growth, '.2f')} | {_num(p.slowdown_growth, '.2f')} "
+            f"| {'yes' if e.sustained else 'no'} |"
         )
     return [*lines, ""]
 

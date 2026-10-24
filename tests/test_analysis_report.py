@@ -176,6 +176,9 @@ def test_dev_mode_banners_the_report_and_every_figure(
         assert f"(figures/{name})" in md
     assert "**not-run**" not in md.split("## Capacity")[0]  # every hypothesis had its inputs
     assert "every rate sustained" in md  # one capacity point: not bracketed, says so
+    assert "| TTFT growth | Slowdown growth | Sustained |" in md
+    assert "amended in October 2026" in md
+    assert "growth on raw TTFT" not in md  # the prompt-length suite gave a prefill fit
     assert "None: development mode includes every run" in md
 
 
