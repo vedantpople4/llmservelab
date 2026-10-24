@@ -18,6 +18,7 @@ import numpy as np
 import pyarrow.parquet as pq
 import pytest
 import yaml
+from tcp import served_over_tcp
 
 from llmserve import cli
 from llmserve.client.capabilities import capabilities
@@ -68,6 +69,7 @@ METADATA_KEYS = (
     "samplers",
     "sleep",
     "power_source",
+    "thermal_probe",
 )
 
 
@@ -155,9 +157,17 @@ def run_in_process(cfg: ExperimentConfig, tmp_path: Path, **kwargs: Any) -> Any:
 
     async def run() -> Any:
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with (
+            httpx.AsyncClient(transport=transport, base_url="http://test") as client,
+            httpx.AsyncClient(transport=transport, base_url="http://test") as metrics_client,
+        ):
             return await run_experiment(
-                cfg, out_root=tmp_path / "results", client=client, builder=builder, **kwargs
+                cfg,
+                out_root=tmp_path / "results",
+                client=client,
+                metrics_client=metrics_client,
+                builder=builder,
+                **kwargs,
             )
 
     return asyncio.run(run())
@@ -229,6 +239,11 @@ def test_closed_benchmark_end_to_end(tmp_path: Path) -> None:
         "gpu_util_pct": None,  # no NVML on this host
         "server_idle": True,  # the mock's /metrics reported an empty engine after warm-up
     }
+    probe = md["thermal_probe"]
+    assert (probe["requests"], probe["prompt_tokens"], probe["output_tokens"]) == (4, 128, 32)
+    for when in ("before", "after"):
+        assert probe[when]["n"] == len(probe[when]["tpot_s"]) == 4
+        assert probe[when]["tpot_p50_s"] == float(np.median(probe[when]["tpot_s"]))
     # The mock has no GPU but does serve /metrics: exactly one sampler ran, none failed.
     assert md["samplers"] == {
         "active": ["server"],
@@ -236,6 +251,7 @@ def test_closed_benchmark_end_to_end(tmp_path: Path) -> None:
         "server_hz": 2,
         "dcgm": "auto",
         "errors": {},
+        "server_failed_scrapes": 0,
     }
     # events.jsonl exists for every rep even when nothing happened (plan §4 layout).
     for rep in range(2):
@@ -281,6 +297,7 @@ def test_gpu_sampler_runs_and_is_recorded(tmp_path: Path, monkeypatch: pytest.Mo
         "server_hz": 2,
         "dcgm": "auto",
         "errors": {},
+        "server_failed_scrapes": 0,
     }
 
 
@@ -335,6 +352,104 @@ def test_simulator_run_with_both_samplers(tmp_path: Path, monkeypatch: pytest.Mo
         assert gpu.num_rows >= 1 and server.num_rows >= 1
         assert server.column_names == SERVER_SCHEMA.names
         assert (rep_path / "events.jsonl").read_text() == ""
+
+
+def test_metrics_scrapes_do_not_queue_behind_benchmark_streams(tmp_path: Path) -> None:
+    # A benchmark client whose pool is always full (one connection, four workers) stands in for
+    # session 1's overloaded points. Sharing it, every scrape waits behind open streams until it
+    # hits PoolTimeout; the sampler must scrape through its own connections instead.
+    raw = make_cfg().canonical()
+    raw.update(repetitions=1)
+    raw["measurement"].update(warmup={"requests": 0}, samplers={"gpu_hz": 0, "server_hz": 50})
+    cfg = ExperimentConfig.model_validate(raw)
+    app = create_app(MockEngine(delay=DelayModel()))
+
+    async def run(base: str) -> Path:
+        limits = httpx.Limits(max_connections=1)
+        timeout = httpx.Timeout(30.0, pool=0.05)
+        async with httpx.AsyncClient(limits=limits, timeout=timeout) as client:
+            run_dir, _ = await run_experiment(
+                cfg,
+                out_root=tmp_path / "results",
+                endpoint=f"{base}/v1",
+                client=client,
+                builder=make_builder(),
+                allow_dirty=True,
+            )
+        return run_dir
+
+    with served_over_tcp(app) as base:
+        run_dir = asyncio.run(run(base))
+
+    md = json.loads((run_dir / "metadata.json").read_text())
+    assert md["samplers"]["errors"] == {}
+    assert md["samplers"]["server_failed_scrapes"] == 0
+    assert pq.read_table(run_dir / "rep-00" / "server.parquet").num_rows >= 20
+
+
+class _InFlight:
+    """ASGI wrapper counting concurrent `/v1/completions` requests as the server sees them."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+        self.now = 0
+        self.peak = 0
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http" or scope["path"] != "/v1/completions":
+            await self.app(scope, receive, send)
+            return
+        self.now += 1
+        self.peak = max(self.peak, self.now)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            self.now -= 1
+
+
+def _slow_run_over_tcp(
+    tmp_path: Path, *, concurrency: int, request_timeout_s: float = 600
+) -> tuple[dict[str, Any], int]:
+    """Run with the runner's own clients against a TCP mock where each measured request spends
+    ~1 s in prefill (probes stay short); returns the cross-rep summary and the server's peak
+    in-flight count."""
+    raw = make_cfg().canonical()
+    raw.update(repetitions=1)
+    raw["load"].update(concurrency=concurrency, requests=concurrency)
+    raw["workload"]["classes"][0]["prompt"]["tokens"] = 2048
+    raw["measurement"].update(
+        warmup={"requests": 0},
+        samplers={"gpu_hz": 0, "server_hz": 0},
+        request_timeout_s=request_timeout_s,
+    )
+    cfg = ExperimentConfig.model_validate(raw)
+    delay = DelayModel(
+        ttft_base_s=0.0, ttft_per_prompt_token_s=5e-4, token_base_s=0.001, token_in_flight_s=0.0
+    )
+    server = _InFlight(create_app(MockEngine(delay=delay)))
+    with served_over_tcp(server) as base:
+        _, cross = asyncio.run(
+            run_experiment(
+                cfg,
+                out_root=tmp_path / "results",
+                endpoint=f"{base}/v1",
+                builder=make_builder(),
+                allow_dirty=True,
+            )
+        )
+    return cross, server.peak
+
+
+def test_the_runners_client_never_caps_in_flight_requests(tmp_path: Path) -> None:
+    # httpx's default pool holds 100 connections, which silently capped every load above 100.
+    cross, peak = _slow_run_over_tcp(tmp_path, concurrency=150)
+    assert cross["success_rate"]["mean"] == 1.0
+    assert peak == 150
+
+
+def test_the_runners_client_still_times_requests_out(tmp_path: Path) -> None:
+    cross, _ = _slow_run_over_tcp(tmp_path, concurrency=2, request_timeout_s=0.2)
+    assert cross["success_rate"]["mean"] == 0.0
 
 
 def test_open_benchmark_trims_the_steady_window(tmp_path: Path) -> None:

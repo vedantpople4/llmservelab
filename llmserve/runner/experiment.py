@@ -1,12 +1,18 @@
 """One command from config to a complete run directory (plan Phase 2 items 7-10).
 
 Flow: git gate → warm-up (a separate small workload, discarded, then settle until the GPU is
-idle and the server reports no in-flight work) → N repetitions of materialize → drive → steady
-window → parquet → per-rep summary → cross-rep summary → metadata. One `RunClock` for the whole
-process, so timestamps are comparable across warm-up and every repetition (ADR-0006).
+idle and the server reports no in-flight work) → thermal probe → N repetitions of materialize →
+drive → steady window → parquet → per-rep summary → thermal probe → cross-rep summary →
+metadata. One `RunClock` for the whole process, so timestamps are comparable across warm-up and
+every repetition (ADR-0006).
 
 The warm-up uses `spawn_key=(repetitions,)` — a seed child outside the measured range — so its
 prompts differ from every measured request (prefix caches cannot make the first rep look fast).
+
+The thermal probe is a fixed closed-loop batch (C=1, 128-token prompts, 32 output tokens) run just
+before the first rep and just after the last. Its TPOT p50 depends on the machine's state only,
+so `Run.thermal_drift` compares the two probes; comparing the reps would confound heat with
+per-rep workload samples that differ. Probe requests are recorded only in `metadata.thermal_probe`.
 
 The samplers (NVML thread at `gpu_hz`, `/metrics` scraper at `server_hz`) run inside every
 repetition when the config asks for them and the backend supports them. A sampler that cannot
@@ -20,21 +26,24 @@ import asyncio
 import importlib.util
 import os
 import platform
+import statistics
 import sys
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
 from llmserve.analysis.aggregate import aggregate, summarize, window_of
 from llmserve.client.capabilities import Capabilities, capabilities
+from llmserve.config import schema
 from llmserve.config.loader import config_hash
 from llmserve.config.schema import ExperimentConfig, Load
+from llmserve.metrics import latency
 from llmserve.metrics.gpu import GpuSampler
-from llmserve.metrics.server import ServerSampler, lookup, parse_prometheus
+from llmserve.metrics.server import ServerSampler, describe, lookup, parse_prometheus
 from llmserve.runner import macos, storage
 from llmserve.runner.clock import RunClock
 from llmserve.runner.env_check import GPU_IDLE_UTIL_PCT, base_url, settled_gpu_utilization
@@ -42,6 +51,10 @@ from llmserve.runner.metadata import build_metadata, git_state
 from llmserve.runner.run import drive
 from llmserve.workload.generator import materialize, save_workload
 from llmserve.workload.prompts import PromptBuilder
+
+PROBE_REQUESTS = 4
+PROBE_PROMPT_TOKENS = 128
+PROBE_OUTPUT_TOKENS = 32
 
 
 class DirtyTreeError(RuntimeError):
@@ -55,14 +68,16 @@ async def run_experiment(
     endpoint: str | None = None,
     allow_dirty: bool = False,
     client: httpx.AsyncClient | None = None,
+    metrics_client: httpx.AsyncClient | None = None,
     builder: PromptBuilder | None = None,
     progress: Callable[[str], None] = lambda _msg: None,
 ) -> tuple[Path, dict[str, Any]]:
     """Run `cfg` end to end under `out_root`; returns the run directory and cross-rep summary.
 
-    `client` and `builder` are injectable for tests; the CLI uses a real HTTP client and the
-    pinned tokenizer. `endpoint` overrides `server.endpoint` (the mock's port is assigned at
-    runtime). Paper runs refuse a dirty tree unless `allow_dirty`.
+    `client` (benchmark requests), `metrics_client` (the `/metrics` sampler) and `builder` are
+    injectable for tests; the CLI uses real HTTP clients and the pinned tokenizer. `endpoint`
+    overrides `server.endpoint` (the mock's port is assigned at runtime). Paper runs refuse a
+    dirty tree unless `allow_dirty`.
     """
     sha, dirty = git_state()
     if dirty and not allow_dirty:
@@ -90,9 +105,18 @@ async def run_experiment(
     for line in _startup_lines():
         progress(line)
 
-    own_client = client is None
+    owned: list[httpx.AsyncClient] = []
     if client is None:
-        client = httpx.AsyncClient()
+        # The load sets concurrency; httpx's default 100-connection pool would silently cap it.
+        # Per-request timeouts (`request_timeout_s`) still bound each request.
+        client = httpx.AsyncClient(
+            limits=httpx.Limits(max_connections=None, max_keepalive_connections=None)
+        )
+        owned.append(client)
+    if metrics_client is None:
+        # Its own pool: on a shared one, scrapes queue behind open streams and hit PoolTimeout.
+        metrics_client = httpx.AsyncClient()
+        owned.append(metrics_client)
     run_mark = macos.sleep_mark()
     power_start = macos.power_source()
     if power_start == macos.BATTERY_POWER:
@@ -103,7 +127,7 @@ async def run_experiment(
             cfg,
             caps=caps,
             clock=clock,
-            client=client,
+            client=metrics_client,
             target=target,
             kind=cfg.server.kind,
             progress=progress,
@@ -119,6 +143,16 @@ async def run_experiment(
             token_counter=token_counter,
             progress=progress,
         )
+        probe_args: dict[str, Any] = {
+            "client": client,
+            "caps": caps,
+            "clock": clock,
+            "target": target,
+            "builder": builder,
+            "token_counter": token_counter,
+            "progress": progress,
+        }
+        probe_before = await _thermal_probe(cfg, "before", **probe_args)
         summaries: list[dict[str, Any]] = []
         slept_per_rep: list[float | None] = []
         for rep in range(cfg.repetitions):
@@ -162,6 +196,7 @@ async def run_experiment(
                 f"{counts['events']} event(s)"
             )
 
+        probe_after = await _thermal_probe(cfg, "after", **probe_args)
         cross = aggregate(summaries)
         storage.write_json(cross, run_dir / "summary.json")
         storage.write_json(
@@ -183,6 +218,7 @@ async def run_experiment(
                     "server_hz": cfg.measurement.samplers.server_hz,
                     "dcgm": cfg.measurement.samplers.dcgm,
                     "errors": samplers.errors,
+                    "server_failed_scrapes": samplers.server_failures,
                 },
                 sleep={
                     "total_s": macos.slept_s(run_mark),
@@ -190,13 +226,20 @@ async def run_experiment(
                     "method": "delta CLOCK_MONOTONIC - delta CLOCK_UPTIME_RAW (Darwin only)",
                 },
                 power_source={"start": power_start, "end": macos.power_source()},
+                thermal_probe={
+                    "requests": PROBE_REQUESTS,
+                    "prompt_tokens": PROBE_PROMPT_TOKENS,
+                    "output_tokens": PROBE_OUTPUT_TOKENS,
+                    "before": probe_before,
+                    "after": probe_after,
+                },
             ),
             run_dir / "metadata.json",
         )
         return run_dir, cross
     finally:
-        if own_client:
-            await client.aclose()
+        for owned_client in owned:
+            await owned_client.aclose()
 
 
 class _Samplers:
@@ -206,6 +249,8 @@ class _Samplers:
     A sampler runs only when the config asks for it (rate > 0) and the backend can feed it
     (`capabilities`). After the first failure it stays off for the remaining repetitions, with
     the reason recorded once in `errors` and timestamped in that repetition's `events.jsonl`.
+    Skipped `/metrics` ticks (transient scrape failures) are not failures; they are counted in
+    `server_failures`.
     """
 
     def __init__(
@@ -233,6 +278,7 @@ class _Samplers:
         self._progress = progress
         self.active: list[str] = []
         self.errors: dict[str, str] = {}
+        self.server_failures = 0
 
     def plan(self) -> str:
         """One line saying what will sample, or why not — printed before the warm-up."""
@@ -274,7 +320,7 @@ class _Samplers:
                 await server_candidate.start()  # its first scrape validates the series names
             except Exception as e:  # missing series or an unreachable /metrics
                 self._server_on = False
-                self._record("server", str(e), events)
+                self._record("server", describe(e), events)
             else:
                 server = server_candidate
                 if "server" not in self.active:
@@ -302,6 +348,7 @@ class _Samplers:
             server_samples = await server.stop()
             storage.write_server(rep_path / "server.parquet", server_samples)
             counts["server"] = len(server_samples)
+            self.server_failures += server.failures
             if server.error:
                 self._server_on = False
                 self._record("server", server.error, events)
@@ -392,6 +439,56 @@ async def _warmup(
         "gpu_util_pct": util,
         "server_idle": server_idle,
     }
+
+
+async def _thermal_probe(
+    cfg: ExperimentConfig,
+    when: Literal["before", "after"],
+    *,
+    client: httpx.AsyncClient,
+    caps: Capabilities,
+    clock: RunClock,
+    target: str,
+    builder: PromptBuilder,
+    token_counter: Callable[[str], int] | None,
+    progress: Callable[[str], None],
+) -> dict[str, Any]:
+    """Send the fixed probe batch; returns each request's TPOT and their median."""
+    probe_cfg = cfg.model_copy(
+        update={
+            "load": Load(mode="closed", concurrency=1, requests=PROBE_REQUESTS),
+            "workload": schema.Workload.model_validate(
+                {
+                    "classes": [
+                        {
+                            "name": "thermal_probe",
+                            "prompt": {"distribution": "fixed", "tokens": PROBE_PROMPT_TOKENS},
+                            "output": {"distribution": "fixed", "tokens": PROBE_OUTPUT_TOKENS},
+                        }
+                    ]
+                }
+            ),
+            # The experiment's scheduler would make probes incomparable across experiments.
+            "gateway": schema.Gateway(),
+        }
+    )
+    # Seed children past the warm-up's: same shapes before and after, but no shared prefixes.
+    rep = cfg.repetitions + (1 if when == "before" else 2)
+    workload = materialize(probe_cfg, rep=rep, builder=builder)
+    records = await drive(
+        probe_cfg,
+        workload,
+        clock=clock,
+        client=client,
+        caps=caps,
+        endpoint=target,
+        token_counter=token_counter,
+    )
+    tpots = [t for t in map(latency.tpot, records) if t is not None]
+    p50 = statistics.median(tpots) if tpots else None
+    shown = f"{p50 * 1e3:.1f} ms" if p50 is not None else "n/a"
+    progress(f"thermal probe {when}: TPOT p50 {shown} ({len(tpots)}/{PROBE_REQUESTS} requests)")
+    return {"tpot_s": tpots, "tpot_p50_s": p50, "n": len(tpots)}
 
 
 async def _server_idle(

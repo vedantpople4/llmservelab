@@ -81,20 +81,36 @@ def test_reportable_needs_vllm_metal_a_clean_tree_and_a_valid_summary(tmp_path: 
         assert _written_run(tmp_path, dirty=dirty, invalid=invalid).reportable is expected
 
 
-def test_more_than_ten_percent_thermal_drift_is_unreportable(tmp_path: Path) -> None:
-    run = _written_run(tmp_path, tpots=(0.020, 0.021, 0.0222))
+def _probes(before: float, after: float) -> dict[str, Any]:
+    return {
+        "thermal_probe": {
+            "before": {"tpot_s": [before] * 4, "tpot_p50_s": before, "n": 4},
+            "after": {"tpot_s": [after] * 4, "tpot_p50_s": after, "n": 4},
+        }
+    }
+
+
+def test_more_than_ten_percent_probe_drift_is_unreportable(tmp_path: Path) -> None:
+    run = _written_run(tmp_path, tpots=(0.020, 0.020, 0.020), metadata=_probes(0.020, 0.0222))
     assert math.isclose(run.thermal_drift or 0.0, 0.11)
-    assert run.unreportable_reasons == ["thermal drift +11% (last rep vs first, TPOT p50)"]
+    assert run.unreportable_reasons == ["thermal drift +11% (probe after vs before, TPOT p50)"]
 
 
-def test_drift_under_ten_percent_is_reportable(tmp_path: Path) -> None:
-    run = _written_run(tmp_path, tpots=(0.020, 0.025, 0.0218))
+def test_probe_drift_under_ten_percent_is_reportable(tmp_path: Path) -> None:
+    run = _written_run(tmp_path, metadata=_probes(0.020, 0.0218))
     assert math.isclose(run.thermal_drift or 0.0, 0.09)
     assert run.reportable is True
 
 
-def test_a_single_rep_has_no_drift_and_stays_reportable(tmp_path: Path) -> None:
-    run = _written_run(tmp_path, tpots=(0.020,))
+def test_reps_that_differ_in_tpot_are_not_drift_when_the_probes_agree(tmp_path: Path) -> None:
+    # Session 1's bursty run: each rep sampled a different long-context mix.
+    run = _written_run(tmp_path, tpots=(0.301, 0.355, 0.408), metadata=_probes(0.020, 0.0204))
+    assert math.isclose(run.thermal_drift or 0.0, 0.02)
+    assert run.reportable is True
+
+
+def test_a_run_without_probes_has_no_drift_evidence(tmp_path: Path) -> None:
+    run = _written_run(tmp_path, tpots=(0.020, 0.030))
     assert run.thermal_drift is None
     assert run.reportable is True
 

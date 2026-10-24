@@ -219,12 +219,10 @@ def test_reportable_runs_are_kept_and_others_excluded(results: Path, tmp_path: P
         config = path / "config.resolved.yaml"
         config.write_text(config.read_text().replace("kind: mock", "kind: vllm-metal"))
         metadata = json.loads((path / "metadata.json").read_text())
+        # The mock's wall-clock TPOT wanders; pin the probes so drift cannot exclude the run.
+        probe = metadata["thermal_probe"]
+        probe["after"] = probe["before"]
         (path / "metadata.json").write_text(json.dumps({**metadata, "git_dirty": False}))
-        # The mock's wall-clock TPOT wanders between reps; pin it so drift cannot exclude the run.
-        summary = json.loads((path / "summary.json").read_text())
-        for rep in summary["per_rep"]:
-            rep["latency"]["tpot_s"]["p50"] = summary["per_rep"][0]["latency"]["tpot_s"]["p50"]
-        (path / "summary.json").write_text(json.dumps(summary))
     for run in _runs(root):
         assert run.reportable == (not run.unreportable_reasons)
     out = tmp_path / "out"
