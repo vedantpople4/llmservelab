@@ -93,12 +93,13 @@ def build_metadata(
     samplers: dict[str, Any],
     sleep: dict[str, Any],
     power_source: dict[str, Any],
+    thermal_probe: dict[str, Any],
 ) -> dict[str, Any]:
     """Assemble `metadata.json`. `endpoint` is the one actually driven (CLI `--endpoint`).
 
     `samplers` (`active`, requested rates, any `errors`), `sleep` (seconds the Mac slept, in total
-    and per rep) and `power_source` (at start and end) come from the run, so this function only
-    places them.
+    and per rep), `power_source` (at start and end) and `thermal_probe` (TPOT of the fixed probe
+    before and after the reps) come from the run, so this function only places them.
     """
     return {
         "run_id": run_id,
@@ -167,4 +168,5 @@ def build_metadata(
         "samplers": samplers,
         "sleep": sleep,
         "power_source": power_source,
+        "thermal_probe": thermal_probe,
     }

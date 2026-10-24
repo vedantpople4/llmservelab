@@ -68,6 +68,7 @@ METADATA_KEYS = (
     "samplers",
     "sleep",
     "power_source",
+    "thermal_probe",
 )
 
 
@@ -229,6 +230,11 @@ def test_closed_benchmark_end_to_end(tmp_path: Path) -> None:
         "gpu_util_pct": None,  # no NVML on this host
         "server_idle": True,  # the mock's /metrics reported an empty engine after warm-up
     }
+    probe = md["thermal_probe"]
+    assert (probe["requests"], probe["prompt_tokens"], probe["output_tokens"]) == (4, 128, 32)
+    for when in ("before", "after"):
+        assert probe[when]["n"] == len(probe[when]["tpot_s"]) == 4
+        assert probe[when]["tpot_p50_s"] == float(np.median(probe[when]["tpot_s"]))
     # The mock has no GPU but does serve /metrics: exactly one sampler ran, none failed.
     assert md["samplers"] == {
         "active": ["server"],

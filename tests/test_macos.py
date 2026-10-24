@@ -98,7 +98,7 @@ def test_caffeinate_is_held_through_every_run_of_the_process(
     run_in_process(make_cfg(), tmp_path / "a", allow_dirty=True)
     run_in_process(make_cfg(), tmp_path / "b", allow_dirty=True)  # the next point of a suite
     assert caffeinate.spawns == [["caffeinate", "-i", "-w", str(os.getpid())]]
-    assert held_during_reps == [True] * 6  # warm-up and both reps, twice
+    assert held_during_reps == [True] * 10  # warm-up, both probes and both reps, twice
     assert caffeinate.holding  # still held between and after runs; it ends with the process
 
 
@@ -148,7 +148,7 @@ def test_metadata_attributes_sleep_to_the_rep_it_happened_in(
     async def drive(*args: Any, **kwargs: Any) -> Any:
         nonlocal drives, asleep_ns
         drives += 1
-        asleep_ns += {1: 100 * S, 3: 3612 * S}.get(drives, 0)  # during warm-up and rep 1
+        asleep_ns += {1: 100 * S, 4: 3612 * S}.get(drives, 0)  # warm-up, probe, rep 0, rep 1
         return await real_drive(*args, **kwargs)
 
     monkeypatch.setattr(macos, "_read_clocks", read_clocks)

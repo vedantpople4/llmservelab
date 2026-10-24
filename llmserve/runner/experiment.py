@@ -1,12 +1,18 @@
 """One command from config to a complete run directory (plan Phase 2 items 7-10).
 
 Flow: git gate → warm-up (a separate small workload, discarded, then settle until the GPU is
-idle and the server reports no in-flight work) → N repetitions of materialize → drive → steady
-window → parquet → per-rep summary → cross-rep summary → metadata. One `RunClock` for the whole
-process, so timestamps are comparable across warm-up and every repetition (ADR-0006).
+idle and the server reports no in-flight work) → thermal probe → N repetitions of materialize →
+drive → steady window → parquet → per-rep summary → thermal probe → cross-rep summary →
+metadata. One `RunClock` for the whole process, so timestamps are comparable across warm-up and
+every repetition (ADR-0006).
 
 The warm-up uses `spawn_key=(repetitions,)` — a seed child outside the measured range — so its
 prompts differ from every measured request (prefix caches cannot make the first rep look fast).
+
+The thermal probe is a fixed closed-loop batch (C=1, 128-token prompts, 32 output tokens) run just
+before the first rep and just after the last. Its TPOT p50 depends on the machine's state only,
+so `Run.thermal_drift` compares the two probes; comparing the reps would confound heat with
+per-rep workload samples that differ. Probe requests are recorded only in `metadata.thermal_probe`.
 
 The samplers (NVML thread at `gpu_hz`, `/metrics` scraper at `server_hz`) run inside every
 repetition when the config asks for them and the backend supports them. A sampler that cannot
@@ -20,19 +26,22 @@ import asyncio
 import importlib.util
 import os
 import platform
+import statistics
 import sys
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
 from llmserve.analysis.aggregate import aggregate, summarize, window_of
 from llmserve.client.capabilities import Capabilities, capabilities
+from llmserve.config import schema
 from llmserve.config.loader import config_hash
 from llmserve.config.schema import ExperimentConfig, Load
+from llmserve.metrics import latency
 from llmserve.metrics.gpu import GpuSampler
 from llmserve.metrics.server import ServerSampler, lookup, parse_prometheus
 from llmserve.runner import macos, storage
@@ -42,6 +51,10 @@ from llmserve.runner.metadata import build_metadata, git_state
 from llmserve.runner.run import drive
 from llmserve.workload.generator import materialize, save_workload
 from llmserve.workload.prompts import PromptBuilder
+
+PROBE_REQUESTS = 4
+PROBE_PROMPT_TOKENS = 128
+PROBE_OUTPUT_TOKENS = 32
 
 
 class DirtyTreeError(RuntimeError):
@@ -119,6 +132,16 @@ async def run_experiment(
             token_counter=token_counter,
             progress=progress,
         )
+        probe_args: dict[str, Any] = {
+            "client": client,
+            "caps": caps,
+            "clock": clock,
+            "target": target,
+            "builder": builder,
+            "token_counter": token_counter,
+            "progress": progress,
+        }
+        probe_before = await _thermal_probe(cfg, "before", **probe_args)
         summaries: list[dict[str, Any]] = []
         slept_per_rep: list[float | None] = []
         for rep in range(cfg.repetitions):
@@ -162,6 +185,7 @@ async def run_experiment(
                 f"{counts['events']} event(s)"
             )
 
+        probe_after = await _thermal_probe(cfg, "after", **probe_args)
         cross = aggregate(summaries)
         storage.write_json(cross, run_dir / "summary.json")
         storage.write_json(
@@ -190,6 +214,13 @@ async def run_experiment(
                     "method": "delta CLOCK_MONOTONIC - delta CLOCK_UPTIME_RAW (Darwin only)",
                 },
                 power_source={"start": power_start, "end": macos.power_source()},
+                thermal_probe={
+                    "requests": PROBE_REQUESTS,
+                    "prompt_tokens": PROBE_PROMPT_TOKENS,
+                    "output_tokens": PROBE_OUTPUT_TOKENS,
+                    "before": probe_before,
+                    "after": probe_after,
+                },
             ),
             run_dir / "metadata.json",
         )
@@ -392,6 +423,56 @@ async def _warmup(
         "gpu_util_pct": util,
         "server_idle": server_idle,
     }
+
+
+async def _thermal_probe(
+    cfg: ExperimentConfig,
+    when: Literal["before", "after"],
+    *,
+    client: httpx.AsyncClient,
+    caps: Capabilities,
+    clock: RunClock,
+    target: str,
+    builder: PromptBuilder,
+    token_counter: Callable[[str], int] | None,
+    progress: Callable[[str], None],
+) -> dict[str, Any]:
+    """Send the fixed probe batch; returns each request's TPOT and their median."""
+    probe_cfg = cfg.model_copy(
+        update={
+            "load": Load(mode="closed", concurrency=1, requests=PROBE_REQUESTS),
+            "workload": schema.Workload.model_validate(
+                {
+                    "classes": [
+                        {
+                            "name": "thermal_probe",
+                            "prompt": {"distribution": "fixed", "tokens": PROBE_PROMPT_TOKENS},
+                            "output": {"distribution": "fixed", "tokens": PROBE_OUTPUT_TOKENS},
+                        }
+                    ]
+                }
+            ),
+            # The experiment's scheduler would make probes incomparable across experiments.
+            "gateway": schema.Gateway(),
+        }
+    )
+    # Seed children past the warm-up's: same shapes before and after, but no shared prefixes.
+    rep = cfg.repetitions + (1 if when == "before" else 2)
+    workload = materialize(probe_cfg, rep=rep, builder=builder)
+    records = await drive(
+        probe_cfg,
+        workload,
+        clock=clock,
+        client=client,
+        caps=caps,
+        endpoint=target,
+        token_counter=token_counter,
+    )
+    tpots = [t for t in map(latency.tpot, records) if t is not None]
+    p50 = statistics.median(tpots) if tpots else None
+    shown = f"{p50 * 1e3:.1f} ms" if p50 is not None else "n/a"
+    progress(f"thermal probe {when}: TPOT p50 {shown} ({len(tpots)}/{PROBE_REQUESTS} requests)")
+    return {"tpot_s": tpots, "tpot_p50_s": p50, "n": len(tpots)}
 
 
 async def _server_idle(

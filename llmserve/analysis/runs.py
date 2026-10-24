@@ -72,7 +72,7 @@ class Run:
             reasons.append("summary invalid (> 1% failed requests)")
         drift = self.thermal_drift
         if drift is not None and drift > MAX_THERMAL_DRIFT:
-            reasons.append(f"thermal drift {drift:+.0%} (last rep vs first, TPOT p50)")
+            reasons.append(f"thermal drift {drift:+.0%} (probe after vs before, TPOT p50)")
         # Runs from before these fields existed carry no evidence either way.
         slept = (self.metadata.get("sleep") or {}).get("total_s")
         if slept is not None and slept > MAX_SLEPT_S:
@@ -88,12 +88,17 @@ class Run:
 
     @property
     def thermal_drift(self) -> float | None:
-        """Last rep's TPOT p50 over the first's, minus 1: the fanless Mac slowing as it heats.
-        None with fewer than two reps or a missing value."""
-        tpots = [rep["latency"]["tpot_s"]["p50"] for rep in self.summary["per_rep"]]
-        if len(tpots) < 2 or tpots[0] is None or tpots[-1] is None:
+        """The thermal probe's TPOT p50 after the reps over its p50 before them, minus 1: the
+        fanless Mac slowing as it heats. None for runs without probes (no evidence either way).
+
+        The probe is a fixed batch; the reps are not, since each materializes its own workload
+        sample, so a rep-to-rep TPOT change can be the workload rather than the machine."""
+        probe = self.metadata.get("thermal_probe") or {}
+        before = (probe.get("before") or {}).get("tpot_p50_s")
+        after = (probe.get("after") or {}).get("tpot_p50_s")
+        if not before or after is None:
             return None
-        return float(tpots[-1]) / float(tpots[0]) - 1
+        return float(after) / float(before) - 1
 
     def rep_dirs(self) -> list[Path]:
         return sorted(p for p in self.path.glob("rep-*") if p.is_dir())

@@ -618,7 +618,7 @@ def describe_run(run: Run) -> str:
             else "yes"
         ),
         "  reportable: " + ("yes" if not reasons else "no (" + "; ".join(reasons) + ")"),
-        f"  thermal drift (last rep vs first, TPOT P50): {_drift(run.thermal_drift)}",
+        f"  thermal drift (probe after vs before, TPOT P50): {_drift(run.thermal_drift)}",
         "  latency (across-rep mean [95% CI], ms):",
     ]
     for metric, name in (("ttft_s", "TTFT"), ("tpot_s", "TPOT"), ("e2e_s", "E2E")):
