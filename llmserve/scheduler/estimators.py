@@ -107,7 +107,8 @@ def _lstsq(
     design: npt.NDArray[np.float64], y: npt.NDArray[np.float64]
 ) -> tuple[list[float], float]:
     coef, *_ = np.linalg.lstsq(design, y, rcond=None)
-    residual = y - design @ coef
+    # einsum, not @: Accelerate's matmul raises spurious divide-by-zero flags on this shape.
+    residual = y - np.einsum("ij,j->i", design, coef)
     total = float(np.sum((y - y.mean()) ** 2))
     r2 = 1.0 - float(np.sum(residual**2)) / total if total > 0 else 1.0
     return [float(c) for c in coef], r2
