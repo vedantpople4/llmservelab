@@ -18,6 +18,7 @@ import numpy as np
 import pyarrow.parquet as pq
 import pytest
 import yaml
+from tcp import served_over_tcp
 
 from llmserve import cli
 from llmserve.client.capabilities import capabilities
@@ -156,9 +157,17 @@ def run_in_process(cfg: ExperimentConfig, tmp_path: Path, **kwargs: Any) -> Any:
 
     async def run() -> Any:
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with (
+            httpx.AsyncClient(transport=transport, base_url="http://test") as client,
+            httpx.AsyncClient(transport=transport, base_url="http://test") as metrics_client,
+        ):
             return await run_experiment(
-                cfg, out_root=tmp_path / "results", client=client, builder=builder, **kwargs
+                cfg,
+                out_root=tmp_path / "results",
+                client=client,
+                metrics_client=metrics_client,
+                builder=builder,
+                **kwargs,
             )
 
     return asyncio.run(run())
@@ -242,6 +251,7 @@ def test_closed_benchmark_end_to_end(tmp_path: Path) -> None:
         "server_hz": 2,
         "dcgm": "auto",
         "errors": {},
+        "server_failed_scrapes": 0,
     }
     # events.jsonl exists for every rep even when nothing happened (plan §4 layout).
     for rep in range(2):
@@ -287,6 +297,7 @@ def test_gpu_sampler_runs_and_is_recorded(tmp_path: Path, monkeypatch: pytest.Mo
         "server_hz": 2,
         "dcgm": "auto",
         "errors": {},
+        "server_failed_scrapes": 0,
     }
 
 
@@ -341,6 +352,39 @@ def test_simulator_run_with_both_samplers(tmp_path: Path, monkeypatch: pytest.Mo
         assert gpu.num_rows >= 1 and server.num_rows >= 1
         assert server.column_names == SERVER_SCHEMA.names
         assert (rep_path / "events.jsonl").read_text() == ""
+
+
+def test_metrics_scrapes_do_not_queue_behind_benchmark_streams(tmp_path: Path) -> None:
+    # A benchmark client whose pool is always full (one connection, four workers) stands in for
+    # session 1's overloaded points. Sharing it, every scrape waits behind open streams until it
+    # hits PoolTimeout; the sampler must scrape through its own connections instead.
+    raw = make_cfg().canonical()
+    raw.update(repetitions=1)
+    raw["measurement"].update(warmup={"requests": 0}, samplers={"gpu_hz": 0, "server_hz": 50})
+    cfg = ExperimentConfig.model_validate(raw)
+    app = create_app(MockEngine(delay=DelayModel()))
+
+    async def run(base: str) -> Path:
+        limits = httpx.Limits(max_connections=1)
+        timeout = httpx.Timeout(30.0, pool=0.05)
+        async with httpx.AsyncClient(limits=limits, timeout=timeout) as client:
+            run_dir, _ = await run_experiment(
+                cfg,
+                out_root=tmp_path / "results",
+                endpoint=f"{base}/v1",
+                client=client,
+                builder=make_builder(),
+                allow_dirty=True,
+            )
+        return run_dir
+
+    with served_over_tcp(app) as base:
+        run_dir = asyncio.run(run(base))
+
+    md = json.loads((run_dir / "metadata.json").read_text())
+    assert md["samplers"]["errors"] == {}
+    assert md["samplers"]["server_failed_scrapes"] == 0
+    assert pq.read_table(run_dir / "rep-00" / "server.parquet").num_rows >= 20
 
 
 def test_open_benchmark_trims_the_steady_window(tmp_path: Path) -> None:

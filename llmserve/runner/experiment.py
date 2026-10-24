@@ -43,7 +43,7 @@ from llmserve.config.loader import config_hash
 from llmserve.config.schema import ExperimentConfig, Load
 from llmserve.metrics import latency
 from llmserve.metrics.gpu import GpuSampler
-from llmserve.metrics.server import ServerSampler, lookup, parse_prometheus
+from llmserve.metrics.server import ServerSampler, describe, lookup, parse_prometheus
 from llmserve.runner import macos, storage
 from llmserve.runner.clock import RunClock
 from llmserve.runner.env_check import GPU_IDLE_UTIL_PCT, base_url, settled_gpu_utilization
@@ -68,14 +68,16 @@ async def run_experiment(
     endpoint: str | None = None,
     allow_dirty: bool = False,
     client: httpx.AsyncClient | None = None,
+    metrics_client: httpx.AsyncClient | None = None,
     builder: PromptBuilder | None = None,
     progress: Callable[[str], None] = lambda _msg: None,
 ) -> tuple[Path, dict[str, Any]]:
     """Run `cfg` end to end under `out_root`; returns the run directory and cross-rep summary.
 
-    `client` and `builder` are injectable for tests; the CLI uses a real HTTP client and the
-    pinned tokenizer. `endpoint` overrides `server.endpoint` (the mock's port is assigned at
-    runtime). Paper runs refuse a dirty tree unless `allow_dirty`.
+    `client` (benchmark requests), `metrics_client` (the `/metrics` sampler) and `builder` are
+    injectable for tests; the CLI uses real HTTP clients and the pinned tokenizer. `endpoint`
+    overrides `server.endpoint` (the mock's port is assigned at runtime). Paper runs refuse a
+    dirty tree unless `allow_dirty`.
     """
     sha, dirty = git_state()
     if dirty and not allow_dirty:
@@ -103,9 +105,14 @@ async def run_experiment(
     for line in _startup_lines():
         progress(line)
 
-    own_client = client is None
+    owned: list[httpx.AsyncClient] = []
     if client is None:
         client = httpx.AsyncClient()
+        owned.append(client)
+    if metrics_client is None:
+        # Its own pool: on a shared one, scrapes queue behind open streams and hit PoolTimeout.
+        metrics_client = httpx.AsyncClient()
+        owned.append(metrics_client)
     run_mark = macos.sleep_mark()
     power_start = macos.power_source()
     if power_start == macos.BATTERY_POWER:
@@ -116,7 +123,7 @@ async def run_experiment(
             cfg,
             caps=caps,
             clock=clock,
-            client=client,
+            client=metrics_client,
             target=target,
             kind=cfg.server.kind,
             progress=progress,
@@ -207,6 +214,7 @@ async def run_experiment(
                     "server_hz": cfg.measurement.samplers.server_hz,
                     "dcgm": cfg.measurement.samplers.dcgm,
                     "errors": samplers.errors,
+                    "server_failed_scrapes": samplers.server_failures,
                 },
                 sleep={
                     "total_s": macos.slept_s(run_mark),
@@ -226,8 +234,8 @@ async def run_experiment(
         )
         return run_dir, cross
     finally:
-        if own_client:
-            await client.aclose()
+        for owned_client in owned:
+            await owned_client.aclose()
 
 
 class _Samplers:
@@ -237,6 +245,8 @@ class _Samplers:
     A sampler runs only when the config asks for it (rate > 0) and the backend can feed it
     (`capabilities`). After the first failure it stays off for the remaining repetitions, with
     the reason recorded once in `errors` and timestamped in that repetition's `events.jsonl`.
+    Skipped `/metrics` ticks (transient scrape failures) are not failures; they are counted in
+    `server_failures`.
     """
 
     def __init__(
@@ -264,6 +274,7 @@ class _Samplers:
         self._progress = progress
         self.active: list[str] = []
         self.errors: dict[str, str] = {}
+        self.server_failures = 0
 
     def plan(self) -> str:
         """One line saying what will sample, or why not — printed before the warm-up."""
@@ -305,7 +316,7 @@ class _Samplers:
                 await server_candidate.start()  # its first scrape validates the series names
             except Exception as e:  # missing series or an unreachable /metrics
                 self._server_on = False
-                self._record("server", str(e), events)
+                self._record("server", describe(e), events)
             else:
                 server = server_candidate
                 if "server" not in self.active:
@@ -333,6 +344,7 @@ class _Samplers:
             server_samples = await server.stop()
             storage.write_server(rep_path / "server.parquet", server_samples)
             counts["server"] = len(server_samples)
+            self.server_failures += server.failures
             if server.error:
                 self._server_on = False
                 self._record("server", server.error, events)
