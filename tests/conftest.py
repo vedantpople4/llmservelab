@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -52,9 +52,12 @@ def run_factory(tmp_path: Path) -> RunFactory:
     return make
 
 
-@pytest.fixture(autouse=True)
-def _not_a_mac(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture(autouse=True, scope="session")
+def _not_a_mac() -> Iterator[None]:
     """Every test sees a non-Mac host, so a test run on the Mac never spawns caffeinate or reads
-    its battery; `test_macos.py` opts back in with fakes."""
-    monkeypatch.setattr(macos, "is_darwin", lambda: False)
-    monkeypatch.setattr(macos, "_read_clocks", lambda: None)
+    its battery; `test_macos.py` opts back in with fakes. Session-scoped so module-scoped
+    fixtures that run whole experiments see it too."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(macos, "is_darwin", lambda: False)
+        patch.setattr(macos, "_read_clocks", lambda: None)
+        yield

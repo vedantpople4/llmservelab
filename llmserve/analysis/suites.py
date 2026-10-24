@@ -28,7 +28,7 @@ SWEEP_COLUMNS = ("label", "value", "metric", "mean", "lo", "hi", "n")
 @dataclass(frozen=True)
 class SuitePoint:
     label: str
-    value: float
+    value: float | None  # None for a suite of named points (`points:`) rather than a sweep
     run: Run
 
 
@@ -37,7 +37,7 @@ class SuiteRuns:
     suite: str
     suite_file: str
     axis: str
-    points: tuple[SuitePoint, ...]  # sorted by value
+    points: tuple[SuitePoint, ...]  # sorted by value, then label
 
     def keep(self, predicate: Callable[[Run], bool]) -> SuiteRuns:
         return replace(self, points=tuple(p for p in self.points if predicate(p.run)))
@@ -63,13 +63,17 @@ def load_suite_runs(root: Path, suite: str) -> SuiteRuns | None:
         if not (run_dir / "summary.json").is_file():
             continue
         points.append(
-            SuitePoint(label=point["label"], value=float(point["value"]), run=Run(run_dir))
+            SuitePoint(
+                label=point["label"],
+                value=None if point["value"] is None else float(point["value"]),
+                run=Run(run_dir),
+            )
         )
     return SuiteRuns(
         suite=manifest["suite"],
         suite_file=manifest.get("suite_file") or suite_file_for(suite),
         axis=manifest["axis"],
-        points=tuple(sorted(points, key=lambda p: (p.value, p.label))),
+        points=tuple(sorted(points, key=lambda p: (p.value or 0.0, p.label))),
     )
 
 

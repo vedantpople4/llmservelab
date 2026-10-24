@@ -75,8 +75,13 @@ def in_process() -> RunFn:
 
     async def run(cfg: ExperimentConfig, **kwargs: Any) -> tuple[Path, dict[str, Any]]:
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            return await run_experiment(cfg, client=client, builder=builder, **kwargs)
+        async with (
+            httpx.AsyncClient(transport=transport, base_url="http://test") as client,
+            httpx.AsyncClient(transport=transport, base_url="http://test") as metrics_client,
+        ):
+            return await run_experiment(
+                cfg, client=client, metrics_client=metrics_client, builder=builder, **kwargs
+            )
 
     return run
 

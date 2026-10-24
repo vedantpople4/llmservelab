@@ -6,8 +6,9 @@ a sampler that silently collected nothing would make a run look healthy while it
 metrics are absent.
 
 The sampler scrapes once at `start()` (so the failure happens before any measured request),
-then every `1/hz` seconds until `stop()`. Mid-run failures land in `.error` and the caller
-deactivates the sampler for the remaining repetitions.
+then every `1/hz` seconds until `stop()`. A failed mid-run scrape skips that tick and counts in
+`.failures`; only `MAX_CONSECUTIVE_FAILURES` in a row stop the loop, with the reason in `.error`,
+and the caller then deactivates the sampler for the remaining repetitions.
 """
 
 from __future__ import annotations
@@ -41,8 +42,19 @@ CANDIDATES: dict[str, tuple[str, ...]] = {
 }
 
 
+MAX_CONSECUTIVE_FAILURES = 10
+
+
 class SamplerError(RuntimeError):
     """A scrape produced no usable samples; the sampler cannot run."""
+
+
+def describe(e: BaseException) -> str:
+    """A failure message that is never empty: `httpx.PoolTimeout`'s str() often is."""
+    if isinstance(e, SamplerError):
+        return str(e)
+    text = str(e)
+    return f"{type(e).__name__}: {text}" if text else type(e).__name__
 
 
 @dataclass(frozen=True)
@@ -114,12 +126,13 @@ class ServerSampler:
         self._samples: list[ServerSample] = []
         self._task: asyncio.Task[None] | None = None
         self.error: str | None = None
+        self.failures = 0
 
     async def scrape(self) -> ServerSample:
         try:
             resp = await self._client.get(f"{self._base}/metrics")
         except httpx.HTTPError as e:
-            raise SamplerError(f"GET /metrics failed: {e}") from e
+            raise SamplerError(f"GET /metrics failed: {describe(e)}") from e
         if resp.status_code != 200:
             raise SamplerError(f"GET /metrics -> HTTP {resp.status_code}")
         return sample_from(parse_prometheus(resp.text), t_ns=self._clock())
@@ -133,13 +146,20 @@ class ServerSampler:
 
     async def _loop(self) -> None:
         interval = 1.0 / self._hz
+        consecutive = 0
         while True:
             await asyncio.sleep(interval)
             try:
-                self._samples.append(await self.scrape())
-            except Exception as e:  # SamplerError or transport failure: stop, let `.error` tell
-                self.error = str(e)
-                return
+                sample = await self.scrape()
+            except Exception as e:
+                self.failures += 1
+                consecutive += 1
+                if consecutive >= MAX_CONSECUTIVE_FAILURES:
+                    self.error = f"{consecutive} consecutive scrapes failed, last: {describe(e)}"
+                    return
+                continue
+            consecutive = 0
+            self._samples.append(sample)
 
     async def stop(self) -> list[ServerSample]:
         """Stop scraping and return the collected rows (in scrape order)."""

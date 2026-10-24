@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -13,10 +14,12 @@ import httpx
 import pyarrow.parquet as pq
 import pytest
 from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
+from tcp import served_over_tcp
 
 from llmserve.client.capabilities import capabilities
 from llmserve.metrics.server import (
+    MAX_CONSECUTIVE_FAILURES,
     SERVER_SCHEMA,
     SamplerError,
     ServerSample,
@@ -121,24 +124,55 @@ def test_start_refuses_when_a_series_is_missing() -> None:
     asyncio.run(run())
 
 
-def test_mid_run_scrape_failure_lands_in_error() -> None:
+def test_a_persistent_scrape_failure_stops_the_sampler_with_the_reason() -> None:
     state = {"text": exposition()}
 
-    async def run() -> tuple[list[ServerSample], str | None]:
+    async def run() -> tuple[list[ServerSample], str | None, int]:
         transport = httpx.ASGITransport(app=metrics_app(state))
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             sampler = ServerSampler(
-                time.perf_counter_ns, hz=50, base_url="http://test", client=client
+                time.perf_counter_ns, hz=100, base_url="http://test", client=client
             )
             await sampler.start()
             state["text"] = without("vllm:prompt_tokens_total")  # the backend degraded
-            await asyncio.sleep(0.08)
+            await asyncio.sleep(0.5)
             samples = await sampler.stop()
-            return samples, sampler.error
+            return samples, sampler.error, sampler.failures
 
-    samples, error = asyncio.run(run())
-    assert error is not None and "prompt_tokens_total" in error
+    samples, error, failures = asyncio.run(run())
+    assert error is not None
+    assert error.startswith(f"{MAX_CONSECUTIVE_FAILURES} consecutive scrapes failed")
+    assert "prompt_tokens_total" in error
+    assert failures == MAX_CONSECUTIVE_FAILURES  # the loop stopped scraping once it gave up
     assert len(samples) >= 1  # the samples taken before the failure still count
+
+
+def test_transient_scrape_failures_skip_ticks_without_stopping_the_sampler() -> None:
+    app = FastAPI()
+    calls = 0
+
+    @app.get("/metrics")
+    def flaky() -> PlainTextResponse:
+        nonlocal calls
+        calls += 1
+        if calls in (2, 3, 5):
+            return PlainTextResponse("busy", status_code=503)
+        return PlainTextResponse(exposition())
+
+    async def run() -> tuple[list[ServerSample], ServerSampler]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            sampler = ServerSampler(
+                time.perf_counter_ns, hz=100, base_url="http://test", client=client
+            )
+            await sampler.start()
+            await asyncio.sleep(0.2)
+            return await sampler.stop(), sampler
+
+    samples, sampler = asyncio.run(run())
+    assert sampler.error is None
+    assert sampler.failures == 3
+    assert len(samples) >= 5  # scraping went on after every failure
 
 
 def test_server_parquet_round_trip(tmp_path: Path) -> None:
@@ -186,6 +220,45 @@ def test_server_idle_gives_up_on_the_timeout() -> None:
             return await _server_idle(client, "http://test/v1", caps, timeout_s=0.05, hz=100)
 
     assert asyncio.run(run()) is False
+
+
+def held_open_app(state: dict[str, str]) -> FastAPI:
+    """`/metrics` plus `/hold`, a stream that stays open for a second, like a long decode."""
+    app = metrics_app(state)
+
+    @app.get("/hold")
+    def hold() -> StreamingResponse:
+        async def body() -> AsyncIterator[bytes]:
+            yield b"x"
+            await asyncio.sleep(1.0)
+            yield b"y"
+
+        return StreamingResponse(body())
+
+    return app
+
+
+def test_a_scrape_behind_open_streams_on_a_full_pool_fails_with_a_typed_error() -> None:
+    # Session 1's capacity points: /metrics shared the benchmark client, whose pool was full of
+    # open streams, so the scrape waited for a connection and raised httpx.PoolTimeout, whose
+    # str() is empty.
+    state = {"text": exposition()}
+
+    async def run(base: str) -> str:
+        limits = httpx.Limits(max_connections=1)
+        timeout = httpx.Timeout(5.0, pool=0.1)
+        async with httpx.AsyncClient(limits=limits, timeout=timeout) as client:
+            sampler = ServerSampler(time.perf_counter_ns, hz=50, base_url=base, client=client)
+            async with client.stream("GET", f"{base}/hold") as held:
+                chunks = held.aiter_bytes()  # dropping the iterator would close the stream
+                await chunks.__anext__()
+                with pytest.raises(SamplerError) as caught:
+                    await sampler.scrape()
+            return str(caught.value)
+
+    with served_over_tcp(held_open_app(state)) as base:
+        message = asyncio.run(run(base))
+    assert message == "GET /metrics failed: PoolTimeout"
 
 
 def test_server_idle_is_skipped_without_a_metrics_endpoint() -> None:
