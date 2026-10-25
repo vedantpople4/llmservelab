@@ -96,6 +96,11 @@ def test_more_than_ten_percent_probe_drift_is_unreportable(tmp_path: Path) -> No
     assert run.unreportable_reasons == ["thermal drift +11% (probe after vs before, TPOT p50)"]
 
 
+def test_a_run_that_starts_on_a_slowed_machine_is_unreportable(tmp_path: Path) -> None:
+    run = _written_run(tmp_path, metadata=_probes(0.0795, 0.0566))
+    assert run.unreportable_reasons == ["thermal drift -29% (probe after vs before, TPOT p50)"]
+
+
 def test_probe_drift_under_ten_percent_is_reportable(tmp_path: Path) -> None:
     run = _written_run(tmp_path, metadata=_probes(0.020, 0.0218))
     assert math.isclose(run.thermal_drift or 0.0, 0.09)

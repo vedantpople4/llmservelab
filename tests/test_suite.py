@@ -79,9 +79,14 @@ def in_process() -> RunFn:
             httpx.AsyncClient(transport=transport, base_url="http://test") as client,
             httpx.AsyncClient(transport=transport, base_url="http://test") as metrics_client,
         ):
-            return await run_experiment(
+            run_dir, cross = await run_experiment(
                 cfg, client=client, metrics_client=metrics_client, builder=builder, **kwargs
             )
+        # The instant mock's wall-clock TPOT wanders; pin the probes so drift cannot force a rerun.
+        metadata = json.loads((run_dir / "metadata.json").read_text())
+        metadata["thermal_probe"]["after"] = metadata["thermal_probe"]["before"]
+        (run_dir / "metadata.json").write_text(json.dumps(metadata))
+        return run_dir, cross
 
     return run
 
@@ -294,6 +299,21 @@ def test_a_failing_point_is_recorded_and_the_suite_continues(tmp_path: Path) -> 
 
     retry = run(suite, out, runner=good)
     assert statuses(retry.model_dump()) == {"c001": "skipped", "c002": "done", "c004": "skipped"}
+
+
+def test_a_point_the_mac_was_unfit_for_runs_again(tmp_path: Path) -> None:
+    suite = load_suite(write_suite(tmp_path, SWEEP))
+    out = tmp_path / "results"
+    first = run(suite, out, runner=in_process())
+    on_battery = out / first.points[1].run_dir
+    metadata = json.loads((on_battery / "metadata.json").read_text())
+    metadata["power_source"] = {"start": "AC Power", "end": "Battery Power"}
+    (on_battery / "metadata.json").write_text(json.dumps(metadata))
+    # Backdated: the rerun can land in the same second and collide with this directory.
+    on_battery.rename(on_battery.with_name("20000101T000000Z" + on_battery.name[16:]))
+
+    again = run(suite, out, runner=in_process())
+    assert statuses(again.model_dump()) == {"c001": "skipped", "c002": "done", "c004": "skipped"}
 
 
 def test_the_manifest_is_valid_json_between_points(tmp_path: Path) -> None:
