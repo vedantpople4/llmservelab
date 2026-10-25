@@ -79,9 +79,14 @@ def in_process() -> RunFn:
             httpx.AsyncClient(transport=transport, base_url="http://test") as client,
             httpx.AsyncClient(transport=transport, base_url="http://test") as metrics_client,
         ):
-            return await run_experiment(
+            run_dir, cross = await run_experiment(
                 cfg, client=client, metrics_client=metrics_client, builder=builder, **kwargs
             )
+        # The instant mock's wall-clock TPOT wanders; pin the probes so drift cannot force a rerun.
+        metadata = json.loads((run_dir / "metadata.json").read_text())
+        metadata["thermal_probe"]["after"] = metadata["thermal_probe"]["before"]
+        (run_dir / "metadata.json").write_text(json.dumps(metadata))
+        return run_dir, cross
 
     return run
 
