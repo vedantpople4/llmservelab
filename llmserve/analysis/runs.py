@@ -70,8 +70,15 @@ class Run:
             reasons.append("git tree dirty or unknown")
         if self.summary["invalid"]:
             reasons.append("summary invalid (> 1% failed requests)")
+        return reasons + self.machine_reasons
+
+    @property
+    def machine_reasons(self) -> list[str]:
+        """The unreportable reasons that say the Mac, not the run, was off; a suite reruns such
+        a run instead of skipping it."""
+        reasons = []
         drift = self.thermal_drift
-        if drift is not None and drift > MAX_THERMAL_DRIFT:
+        if drift is not None and abs(drift) > MAX_THERMAL_DRIFT:
             reasons.append(f"thermal drift {drift:+.0%} (probe after vs before, TPOT p50)")
         # Runs from before these fields existed carry no evidence either way.
         slept = (self.metadata.get("sleep") or {}).get("total_s")
@@ -88,8 +95,10 @@ class Run:
 
     @property
     def thermal_drift(self) -> float | None:
-        """The thermal probe's TPOT p50 after the reps over its p50 before them, minus 1: the
-        fanless Mac slowing as it heats. None for runs without probes (no evidence either way).
+        """The thermal probe's TPOT p50 after the reps over its p50 before them, minus 1. Either
+        sign means the machine changed under the run: positive is the fanless Mac slowing as it
+        heats, negative is a run that started on a machine already slowed (session 2's h2-mixed
+        began at 80 ms against a 53 ms norm). None for runs without probes.
 
         The probe is a fixed batch; the reps are not, since each materializes its own workload
         sample, so a rep-to-rep TPOT change can be the workload rather than the machine."""

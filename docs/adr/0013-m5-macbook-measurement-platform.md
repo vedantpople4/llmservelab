@@ -43,9 +43,10 @@ KV pool holds 52,784 tokens rather than about 130–140k.
 - **Run hygiene, enforced in code.** A fanless laptop adds three failure modes. Each one makes a
   run unreportable instead of relying on a checklist:
   - Thermal drift: a fixed probe batch (4 requests at C=1, 128-token prompts, 32 output tokens)
-    runs before the first repetition and after the last; its TPOT p50 after is more than 10%
-    above before. Comparing repetitions instead would confound heat with workload, since each
-    repetition samples its own workload.
+    runs before the first repetition and after the last; its TPOT p50 after differs from before
+    by more than 10% in either direction (a slower "before" means the run started on an
+    already-slowed machine). Comparing repetitions instead would confound heat with workload,
+    since each repetition samples its own workload.
   - Sleep: any time asleep during the run (a closed lid sleeps the Mac even mid-run).
   - Battery power at the start or end of the run.
   Runs hold `caffeinate` against idle sleep.

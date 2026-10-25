@@ -19,9 +19,10 @@ Design rules:
 - Sweep labels come from a `str.format` template over `value`; a `.` in the result becomes `p`
   (`r{value:.2f}` with 0.25 → `r0p25`), because experiment names cannot contain dots.
 - Resumable: a point whose latest valid run (`analysis.runs.latest_run`) has the point's config
-  hash is skipped. One point's failure never stops the suite. The manifest
-  (`<out_root>/_suites/<suite>.json`) is rewritten atomically before the first point and after
-  every point, so a dropped session loses at most the point in flight.
+  hash is skipped, unless that run drifted, slept or ran on battery (`Run.machine_reasons`).
+  One point's failure never stops the suite. The manifest (`<out_root>/_suites/<suite>.json`)
+  is rewritten atomically before the first point and after every point, so a dropped session
+  loses at most the point in flight.
 """
 
 from __future__ import annotations
@@ -503,9 +504,11 @@ def _resting_entry(
 
 def _finished_run(point: SuitePoint, out_root: Path) -> str | None:
     """The run directory (relative to `out_root`) of the point's latest valid run, if that run
-    has exactly the point's config."""
+    has exactly the point's config and the Mac was fit to measure it."""
     run = latest_run(out_root, point.experiment)
     if run is None or run.metadata.get("config_hash") != point.config_hash:
+        return None
+    if run.machine_reasons:
         return None
     return run.path.relative_to(out_root).as_posix()
 
