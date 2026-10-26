@@ -240,9 +240,9 @@ def test_closed_benchmark_end_to_end(tmp_path: Path) -> None:
         "server_idle": True,  # the mock's /metrics reported an empty engine after warm-up
     }
     probe = md["thermal_probe"]
-    assert (probe["requests"], probe["prompt_tokens"], probe["output_tokens"]) == (4, 128, 32)
+    assert (probe["requests"], probe["prompt_tokens"], probe["output_tokens"]) == (16, 128, 32)
     for when in ("before", "after"):
-        assert probe[when]["n"] == len(probe[when]["tpot_s"]) == 4
+        assert probe[when]["n"] == len(probe[when]["tpot_s"]) == 16
         assert probe[when]["tpot_p50_s"] == float(np.median(probe[when]["tpot_s"]))
     # The mock has no GPU but does serve /metrics: exactly one sampler ran, none failed.
     assert md["samplers"] == {
@@ -504,3 +504,41 @@ def test_config_loader_is_used_by_benchmark(tmp_path: Path) -> None:
     cfg_path = tmp_path / "cfg.yaml"
     cfg_path.write_text(yaml.safe_dump(cfg.canonical(), sort_keys=False))
     assert load_config(cfg_path) == cfg
+
+
+def _probes_reading(monkeypatch: pytest.MonkeyPatch, p50s: list[float]) -> None:
+    readings = iter(p50s)
+
+    async def probe(cfg: ExperimentConfig, when: str, **kwargs: Any) -> dict[str, Any]:
+        p50 = next(readings)
+        return {"tpot_s": [p50] * 16, "tpot_p50_s": p50, "n": 16}
+
+    monkeypatch.setattr(experiment, "_thermal_probe", probe)
+    monkeypatch.setattr(experiment, "COOLDOWN_PAUSE_S", 0.0)
+
+
+def test_the_first_rep_waits_for_a_cool_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _probes_reading(monkeypatch, [0.091, 0.067, 0.050, 0.052])  # E06 began at 67-91 ms
+    lines: list[str] = []
+    run_dir, _ = run_in_process(make_cfg(), tmp_path, allow_dirty=True, progress=lines.append)
+    probe = json.loads((run_dir / "metadata.json").read_text())["thermal_probe"]
+    assert probe["before"]["tpot_p50_s"] == 0.050
+    assert probe["cooldown"] == {
+        "limit_tpot_s": experiment.COOL_PROBE_TPOT_S,
+        "attempts": 3,
+        "waited_s": probe["cooldown"]["waited_s"],
+        "cool": True,
+    }
+    assert sum(line.startswith("Mac still warm") for line in lines) == 2
+
+
+def test_a_mac_that_never_cools_runs_anyway_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _probes_reading(monkeypatch, [0.080, 0.081])
+    monkeypatch.setattr(experiment, "COOLDOWN_TIMEOUT_S", 0.0)
+    run_dir, _ = run_in_process(make_cfg(), tmp_path, allow_dirty=True)
+    probe = json.loads((run_dir / "metadata.json").read_text())["thermal_probe"]
+    assert (probe["cooldown"]["attempts"], probe["cooldown"]["cool"]) == (1, False)

@@ -42,14 +42,20 @@ KV pool holds 52,784 tokens rather than about 130–140k.
   values scaled by the measured speed ratios: TTFT ×3, TPOT ×2.
 - **Run hygiene, enforced in code.** A fanless laptop adds three failure modes. Each one makes a
   run unreportable instead of relying on a checklist:
-  - Thermal drift: a fixed probe batch (4 requests at C=1, 128-token prompts, 32 output tokens)
-    runs before the first repetition and after the last; its TPOT p50 after differs from before
-    by more than 10% in either direction (a slower "before" means the run started on an
-    already-slowed machine). Comparing repetitions instead would confound heat with workload,
+  - Thermal drift: a fixed probe batch (16 requests at C=1, 128-token prompts, 32 output
+    tokens) runs before the first repetition and after the last; its TPOT p50 after differs
+    from before by more than 10% in either direction (a slower "before" means the run started on
+    an already-slowed machine). Comparing repetitions instead would confound heat with workload,
     since each repetition samples its own workload.
   - Sleep: any time asleep during the run (a closed lid sleeps the Mac even mid-run).
-  - Battery power at the start or end of the run.
-  Runs hold `caffeinate` against idle sleep.
+  - Battery power at any point of the run; the source is polled every 15 s.
+  Runs hold `caffeinate` against idle sleep, and the "before" probe repeats, a minute apart, until
+  its TPOT p50 is at most 58 ms (a cool Mac probes at 45-55 ms) or 20 minutes pass, so heat from
+  one experiment does not carry into the next.
+
+  Amended October 2026 after Phase 3 sessions 2-4: the probe grew from 4 requests (one slow
+  request moved the median past 10%), drift became two-sided, battery is polled rather than read
+  at the ends, and the cool-down gate was added (E06 started at 67-91 ms right after E05).
 
 ## Consequences
 

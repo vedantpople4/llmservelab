@@ -154,13 +154,14 @@ def test_metadata_attributes_sleep_to_the_rep_it_happened_in(
     monkeypatch.setattr(macos, "_read_clocks", read_clocks)
     monkeypatch.setattr(experiment, "drive", drive)
     sources = iter(["AC Power", "Battery Power"])
-    monkeypatch.setattr(macos, "power_source", lambda: next(sources))
+    monkeypatch.setattr(macos, "power_source", lambda: next(sources, "AC Power"))
+    monkeypatch.setattr(experiment, "POWER_POLL_S", 3600.0)
 
     run_dir, _ = run_in_process(make_cfg(), tmp_path, allow_dirty=True)
     md = json.loads((run_dir / "metadata.json").read_text())
     assert md["sleep"]["per_rep_s"] == [0.0, 3612.0]
     assert md["sleep"]["total_s"] == 3712.0
-    assert md["power_source"] == {"start": "AC Power", "end": "Battery Power"}
+    assert md["power_source"]["start"] == "AC Power"
 
 
 def test_metadata_records_nulls_off_darwin(tmp_path: Path) -> None:
@@ -168,7 +169,34 @@ def test_metadata_records_nulls_off_darwin(tmp_path: Path) -> None:
     md = json.loads((run_dir / "metadata.json").read_text())
     assert md["sleep"]["total_s"] is None
     assert md["sleep"]["per_rep_s"] == [None, None]
-    assert md["power_source"] == {"start": None, "end": None}
+    assert md["power_source"] == {"start": None, "end": None, "seen": []}
+
+
+def test_a_charger_pulled_during_a_rep_is_recorded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    on_a_mac(monkeypatch)
+    source = "AC Power"
+    monkeypatch.setattr(macos, "power_source", lambda: source)
+    monkeypatch.setattr(experiment, "POWER_POLL_S", 0.0)
+
+    async def drive(*args: Any, **kwargs: Any) -> Any:
+        nonlocal source
+        records = await real_drive(*args, **kwargs)
+        if len(args[1]) == 40:  # a measured rep, not warm-up or a probe
+            source = macos.BATTERY_POWER
+            await asyncio.sleep(0.05)  # the watch reads it, then the charger goes back in
+            source = "AC Power"
+        return records
+
+    monkeypatch.setattr(experiment, "drive", drive)
+    run_dir, _ = run_in_process(make_cfg(), tmp_path, allow_dirty=True)
+    md = json.loads((run_dir / "metadata.json").read_text())
+    assert md["power_source"] == {
+        "start": "AC Power",
+        "end": "AC Power",
+        "seen": ["AC Power", "Battery Power"],
+    }
 
 
 def test_env_check_warns_on_battery_without_failing(monkeypatch: pytest.MonkeyPatch) -> None:

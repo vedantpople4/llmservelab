@@ -135,6 +135,12 @@ def test_a_run_that_started_or_ended_on_battery_is_unreportable(tmp_path: Path) 
     assert on_ac.reportable is True
 
 
+def test_a_run_unplugged_only_mid_run_is_unreportable(tmp_path: Path) -> None:
+    replugged = {"start": "AC Power", "end": "AC Power", "seen": ["AC Power", "Battery Power"]}
+    run = _written_run(tmp_path, metadata={"power_source": replugged})
+    assert run.unreportable_reasons == ["ran on battery power"]
+
+
 def test_unknown_sleep_and_power_are_not_reasons(tmp_path: Path) -> None:
     unknown = {"sleep": {"total_s": None}, "power_source": {"start": None, "end": None}}
     assert _written_run(tmp_path, metadata=unknown).reportable is True

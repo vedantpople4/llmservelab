@@ -1,10 +1,10 @@
 """One command from config to a complete run directory (plan Phase 2 items 7-10).
 
 Flow: git gate → warm-up (a separate small workload, discarded, then settle until the GPU is
-idle and the server reports no in-flight work) → thermal probe → N repetitions of materialize →
-drive → steady window → parquet → per-rep summary → thermal probe → cross-rep summary →
-metadata. One `RunClock` for the whole process, so timestamps are comparable across warm-up and
-every repetition (ADR-0006).
+idle and the server reports no in-flight work) → thermal probe, repeated until cool → N
+repetitions of materialize → drive → steady window → parquet → per-rep summary → thermal probe →
+cross-rep summary → metadata. One `RunClock` for the whole process, so timestamps are comparable
+across warm-up and every repetition (ADR-0006).
 
 The warm-up uses `spawn_key=(repetitions,)` — a seed child outside the measured range — so its
 prompts differ from every measured request (prefix caches cannot make the first rep look fast).
@@ -13,6 +13,9 @@ The thermal probe is a fixed closed-loop batch (C=1, 128-token prompts, 32 outpu
 before the first rep and just after the last. Its TPOT p50 depends on the machine's state only,
 so `Run.thermal_drift` compares the two probes; comparing the reps would confound heat with
 per-rep workload samples that differ. Probe requests are recorded only in `metadata.thermal_probe`.
+The "before" probe doubles as a cool-down gate: it repeats, with pauses, until the Mac probes
+cool, because heat carries from one experiment into the next (session 4's E06 started at 67-91 ms
+right after E05). The power source is polled through the whole run, not only at its ends.
 
 The samplers (NVML thread at `gpu_hz`, `/metrics` scraper at `server_hz`) run inside every
 repetition when the config asks for them and the backend supports them. A sampler that cannot
@@ -52,9 +55,13 @@ from llmserve.runner.run import drive
 from llmserve.workload.generator import materialize, save_workload
 from llmserve.workload.prompts import PromptBuilder
 
-PROBE_REQUESTS = 4
+PROBE_REQUESTS = 16  # with 4, one slow request moved the median past the drift threshold
 PROBE_PROMPT_TOKENS = 128
 PROBE_OUTPUT_TOKENS = 32
+COOL_PROBE_TPOT_S = 0.058  # a cool M5 probes at 45-55 ms (ADR-0013)
+COOLDOWN_TIMEOUT_S = 1200.0
+COOLDOWN_PAUSE_S = 60.0
+POWER_POLL_S = 15.0
 
 
 class DirtyTreeError(RuntimeError):
@@ -122,6 +129,8 @@ async def run_experiment(
     if power_start == macos.BATTERY_POWER:
         progress("WARNING on battery power: this run will not be reportable")
     macos.keep_awake(progress)
+    power_seen: set[str] = set()
+    power_watch = asyncio.create_task(macos.watch_power(power_seen, POWER_POLL_S))
     try:
         samplers = _Samplers(
             cfg,
@@ -152,7 +161,7 @@ async def run_experiment(
             "token_counter": token_counter,
             "progress": progress,
         }
-        probe_before = await _thermal_probe(cfg, "before", **probe_args)
+        probe_before, cooldown = await _cool_probe(cfg, **probe_args)
         summaries: list[dict[str, Any]] = []
         slept_per_rep: list[float | None] = []
         for rep in range(cfg.repetitions):
@@ -225,19 +234,25 @@ async def run_experiment(
                     "per_rep_s": slept_per_rep,
                     "method": "delta CLOCK_MONOTONIC - delta CLOCK_UPTIME_RAW (Darwin only)",
                 },
-                power_source={"start": power_start, "end": macos.power_source()},
+                power_source={
+                    "start": power_start,
+                    "end": macos.power_source(),
+                    "seen": sorted(power_seen),
+                },
                 thermal_probe={
                     "requests": PROBE_REQUESTS,
                     "prompt_tokens": PROBE_PROMPT_TOKENS,
                     "output_tokens": PROBE_OUTPUT_TOKENS,
                     "before": probe_before,
                     "after": probe_after,
+                    "cooldown": cooldown,
                 },
             ),
             run_dir / "metadata.json",
         )
         return run_dir, cross
     finally:
+        power_watch.cancel()
         for owned_client in owned:
             await owned_client.aclose()
 
@@ -439,6 +454,34 @@ async def _warmup(
         "gpu_util_pct": util,
         "server_idle": server_idle,
     }
+
+
+async def _cool_probe(
+    cfg: ExperimentConfig, **probe_args: Any
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Repeat the "before" probe until it is cool or the cool-down times out; returns the last
+    probe and how the wait went. A probe with no TPOT cannot judge heat and ends the wait."""
+    progress: Callable[[str], None] = probe_args["progress"]
+    start = time.monotonic()
+    attempts = 0
+    while True:
+        probe = await _thermal_probe(cfg, "before", **probe_args)
+        attempts += 1
+        p50 = probe["tpot_p50_s"]
+        cool = None if p50 is None else p50 <= COOL_PROBE_TPOT_S
+        waited_s = time.monotonic() - start
+        if cool is not False or waited_s >= COOLDOWN_TIMEOUT_S:
+            return probe, {
+                "limit_tpot_s": COOL_PROBE_TPOT_S,
+                "attempts": attempts,
+                "waited_s": round(waited_s, 1),
+                "cool": cool,
+            }
+        progress(
+            f"Mac still warm (limit {COOL_PROBE_TPOT_S * 1e3:.0f} ms); probing again in "
+            f"{COOLDOWN_PAUSE_S:.0f} s"
+        )
+        await asyncio.sleep(COOLDOWN_PAUSE_S)
 
 
 async def _thermal_probe(
