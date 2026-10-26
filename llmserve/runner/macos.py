@@ -7,6 +7,7 @@ them without a Mac.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import subprocess
@@ -64,6 +65,16 @@ def power_source() -> str | None:
         return None
     output = _pmset_batt()
     return None if output is None else parse_power_source(output)
+
+
+async def watch_power(seen: set[str], interval_s: float) -> None:
+    """Add every power source read to `seen` until cancelled: a charger pulled and replugged
+    mid-run leaves AC at both ends (session 4's E03)."""
+    while True:
+        source = await asyncio.to_thread(power_source)
+        if source is not None:
+            seen.add(source)
+        await asyncio.sleep(interval_s)
 
 
 def _pmset_batt() -> str | None:

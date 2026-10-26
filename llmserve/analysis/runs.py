@@ -85,7 +85,7 @@ class Run:
         if slept is not None and slept > MAX_SLEPT_S:
             reasons.append(f"Mac slept {slept:.0f} s during the run")
         power = self.metadata.get("power_source") or {}
-        if BATTERY_POWER in (power.get("start"), power.get("end")):
+        if BATTERY_POWER in (power.get("start"), power.get("end"), *power.get("seen", [])):
             reasons.append("ran on battery power")
         return reasons
 
