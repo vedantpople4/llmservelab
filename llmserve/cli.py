@@ -165,6 +165,24 @@ def _report(path: str, *, out: str, dev: bool) -> int:
     return 0
 
 
+def _trace(path: str, *, request: str, rep: int, cost_model: str | None) -> int:
+    from llmserve.analysis.runs import Run
+    from llmserve.analysis.trace import trace
+    from llmserve.scheduler.estimators import CostModel
+
+    run_dir = Path(path)
+    if not (run_dir / "metadata.json").is_file():
+        print(f"FAIL {path}: not a run directory (no metadata.json)", file=sys.stderr)
+        return 2
+    prefill = CostModel.load(Path(cost_model)).prefill if cost_model else None
+    try:
+        print(trace(Run(run_dir), request, rep=rep, prefill=prefill), end="")
+    except KeyError as e:
+        print(f"FAIL {e.args[0]}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def _is_suite(path: Path) -> bool:
     import yaml
 
@@ -223,6 +241,16 @@ def main(argv: list[str] | None = None) -> None:
     )
     analyze = sub.add_parser("analyze", help="describe one run directory")
     analyze.add_argument("path", help="results/<experiment>/<run_id>")
+    trace = sub.add_parser("trace", help="print one request's timeline")
+    trace.add_argument("path", help="results/<experiment>/<run_id>")
+    trace.add_argument("--request", required=True, help="request id, e.g. r000012")
+    trace.add_argument("--rep", type=int, default=0, help="repetition index (default 0)")
+    trace.add_argument(
+        "--cost-model",
+        default=None,
+        metavar="PATH",
+        help="a report's cost_model.json; splits TTFT into server wait and unloaded prefill",
+    )
     report = sub.add_parser("report", help="build the Baseline Performance Report")
     report.add_argument("path", nargs="?", default="results", help="results root (default results)")
     report.add_argument(
@@ -258,6 +286,10 @@ def main(argv: list[str] | None = None) -> None:
         )
     if args.command == "analyze":
         raise SystemExit(_analyze(args.path))
+    if args.command == "trace":
+        raise SystemExit(
+            _trace(args.path, request=args.request, rep=args.rep, cost_model=args.cost_model)
+        )
     if args.command == "report":
         raise SystemExit(_report(args.path, out=args.out, dev=args.dev))
     raise SystemExit(f"llmserve {args.command}: not implemented yet")

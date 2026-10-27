@@ -33,6 +33,12 @@ LATENCY_SERIES = (
 )
 TPOT_SERIES = (("latency.tpot_s.p50", "TPOT P50"),)
 THROUGHPUT_SERIES = (("throughput.gen_toks_s", "generated tokens/s"),)
+PHASE_LABELS = {
+    "gateway_wait_s": "gateway wait",
+    "server_wait_s": "server wait",
+    "prefill_s": "prefill (unloaded)",
+    "decode_s": "decode",
+}
 
 _P = ParamSpec("_P")
 
@@ -133,6 +139,31 @@ def ttft_cdf(samples: Mapping[str, npt.ArrayLike], *, title: str) -> Figure:
     ax.set_ylim(0, 1.01)
     ax.legend(loc="lower right")
     ax.set_title(title)
+    return fig
+
+
+@_styled
+def time_breakdown(table: pd.DataFrame, *, title: str) -> Figure:
+    """Mean seconds per phase as horizontal stacked bars, absolute and as a share of E2E.
+    `table` has a `label` column (one bar each, top to bottom) and the `breakdown.PHASES`."""
+    fig = _figure(ncols=2, width=12, height=2 + 0.45 * len(table))
+    seconds_ax, share_ax = fig.axes
+    labels = table["label"].tolist()[::-1]
+    values = table[list(PHASE_LABELS)].to_numpy(dtype=float)[::-1]
+    totals = values.sum(axis=1, keepdims=True)
+    shares = np.divide(values, totals, out=np.zeros_like(values), where=totals > 0) * 100
+    for ax, data in ((seconds_ax, values), (share_ax, shares)):
+        left = np.zeros(len(labels))
+        for i, name in enumerate(PHASE_LABELS.values()):
+            ax.barh(labels, data[:, i], left=left, color=PALETTE[i], label=name)
+            left += data[:, i]
+    seconds_ax.set_xlabel("mean seconds per request")
+    share_ax.set_xlabel("share of mean E2E (%)")
+    share_ax.set_xlim(0, 100)
+    share_ax.set_yticklabels([])
+    handles, names = seconds_ax.get_legend_handles_labels()
+    fig.legend(handles, names, loc="outside lower center", ncols=len(PHASE_LABELS))
+    fig.suptitle(title)
     return fig
 
 
