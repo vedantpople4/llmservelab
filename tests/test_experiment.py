@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,7 @@ from llmserve.metrics.server import SERVER_SCHEMA
 from llmserve.mock import CbParams, ContinuousBatchEngine, DelayModel, MockEngine, create_app
 from llmserve.runner import experiment
 from llmserve.runner.experiment import DirtyTreeError, run_experiment
+from llmserve.runner.run import drive as real_drive
 from llmserve.workload.generator import load_workload, materialize, save_workload
 from llmserve.workload.prompts import PromptBuilder
 
@@ -542,3 +544,23 @@ def test_a_mac_that_never_cools_runs_anyway_and_says_so(
     run_dir, _ = run_in_process(make_cfg(), tmp_path, allow_dirty=True)
     probe = json.loads((run_dir / "metadata.json").read_text())["thermal_probe"]
     assert (probe["cooldown"]["attempts"], probe["cooldown"]["cool"]) == (1, False)
+
+
+def test_each_probe_starts_after_an_idle_pause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(experiment, "PROBE_SETTLE_S", 0.2)
+    calls: list[tuple[float, float]] = []
+
+    async def drive(*args: Any, **kwargs: Any) -> Any:
+        start = time.monotonic()
+        records = await real_drive(*args, **kwargs)
+        calls.append((start, time.monotonic()))
+        return records
+
+    monkeypatch.setattr(experiment, "drive", drive)
+    run_dir, _ = run_in_process(make_cfg(), tmp_path, allow_dirty=True)
+    (_, warmup_end), (probe_start, _), *_, (_, last_rep_end), (after_start, _) = calls
+    assert probe_start - warmup_end >= 0.2
+    assert after_start - last_rep_end >= 0.2
+    assert json.loads((run_dir / "metadata.json").read_text())["thermal_probe"]["settle_s"] == 0.2

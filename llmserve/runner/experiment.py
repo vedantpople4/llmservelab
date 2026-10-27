@@ -62,6 +62,7 @@ COOL_PROBE_TPOT_S = 0.058  # a cool M5 probes at 45-55 ms (ADR-0013)
 COOLDOWN_TIMEOUT_S = 1200.0
 COOLDOWN_PAUSE_S = 60.0
 POWER_POLL_S = 15.0
+PROBE_SETTLE_S = 30.0  # E03's probe ran 57 ms for ~10 requests after its warm-up batch, then 48
 
 
 class DirtyTreeError(RuntimeError):
@@ -243,6 +244,7 @@ async def run_experiment(
                     "requests": PROBE_REQUESTS,
                     "prompt_tokens": PROBE_PROMPT_TOKENS,
                     "output_tokens": PROBE_OUTPUT_TOKENS,
+                    "settle_s": PROBE_SETTLE_S,
                     "before": probe_before,
                     "after": probe_after,
                     "cooldown": cooldown,
@@ -496,7 +498,10 @@ async def _thermal_probe(
     token_counter: Callable[[str], int] | None,
     progress: Callable[[str], None],
 ) -> dict[str, Any]:
-    """Send the fixed probe batch; returns each request's TPOT and their median."""
+    """Pause idle, then send the fixed probe batch; returns each request's TPOT and their
+    median. The pause lets the tail of the previous load (warm-up or the last rep) pass, which
+    takes seconds; heat that throttles a run lasts minutes and still shows."""
+    await asyncio.sleep(PROBE_SETTLE_S)
     probe_cfg = cfg.model_copy(
         update={
             "load": Load(mode="closed", concurrency=1, requests=PROBE_REQUESTS),

@@ -11,7 +11,7 @@ from test_experiment import run_in_process
 
 from llmserve.analysis.runs import Run
 from llmserve.config.schema import ExperimentConfig
-from llmserve.runner import macos
+from llmserve.runner import experiment, macos
 
 RunFactory = Callable[..., Run]
 
@@ -55,9 +55,10 @@ def run_factory(tmp_path: Path) -> RunFactory:
 @pytest.fixture(autouse=True, scope="session")
 def _not_a_mac() -> Iterator[None]:
     """Every test sees a non-Mac host, so a test run on the Mac never spawns caffeinate or reads
-    its battery; `test_macos.py` opts back in with fakes. Session-scoped so module-scoped
-    fixtures that run whole experiments see it too."""
+    its battery; `test_macos.py` opts back in with fakes. Probes skip their idle pause.
+    Session-scoped so module-scoped fixtures that run whole experiments see it too."""
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(macos, "is_darwin", lambda: False)
         patch.setattr(macos, "_read_clocks", lambda: None)
+        patch.setattr(experiment, "PROBE_SETTLE_S", 0.0)  # 30 s per probe would stall the suite
         yield
