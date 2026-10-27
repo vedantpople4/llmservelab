@@ -564,3 +564,31 @@ def test_each_probe_starts_after_an_idle_pause(
     assert probe_start - warmup_end >= 0.2
     assert after_start - last_rep_end >= 0.2
     assert json.loads((run_dir / "metadata.json").read_text())["thermal_probe"]["settle_s"] == 0.2
+
+
+def test_rep_cooldown_probes_and_gates_every_rep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # gate, rep 0, after 0, gate (warm), gate, rep 1, after 1
+    _probes_reading(monkeypatch, [0.050, 0.070, 0.066, 0.051, 0.054])
+    cfg = make_cfg()
+    cfg = cfg.model_copy(
+        update={"measurement": cfg.measurement.model_copy(update={"rep_cooldown": True})}
+    )
+    run_dir, _ = run_in_process(cfg, tmp_path, allow_dirty=True)
+    reps = json.loads((run_dir / "metadata.json").read_text())["thermal_probe"]["reps"]
+    pairs = [
+        (r["before"]["tpot_p50_s"], r["after"]["tpot_p50_s"], r["cooldown"]["attempts"])
+        for r in reps
+    ]
+    assert pairs == [(0.050, 0.070, 1), (0.051, 0.054, 2)]
+
+
+def test_rep_cooldown_stays_out_of_the_hash_unless_set() -> None:
+    cfg = make_cfg()
+    assert "rep_cooldown" not in cfg.canonical()["measurement"]
+    on = cfg.model_copy(
+        update={"measurement": cfg.measurement.model_copy(update={"rep_cooldown": True})}
+    )
+    assert on.canonical()["measurement"]["rep_cooldown"] is True
+    assert config_hash(on) != config_hash(cfg)

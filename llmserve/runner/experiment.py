@@ -13,7 +13,9 @@ The thermal probe is a fixed closed-loop batch (C=1, 128-token prompts, 32 outpu
 before the first rep and just after the last. Its TPOT p50 depends on the machine's state only,
 so `Run.thermal_drift` compares the two probes; comparing the reps would confound heat with
 per-rep workload samples that differ. Probe requests are recorded only in `metadata.thermal_probe`.
-The "before" probe doubles as a cool-down gate: it repeats, with pauses, until the Mac probes
+With `measurement.rep_cooldown`, every rep gets its own probe pair and gate, so a workload that
+heats the Mac within a rep can still start each rep cool. The "before" probe doubles as a
+cool-down gate: it repeats, with pauses, until the Mac probes
 cool, because heat carries from one experiment into the next (session 4's E06 started at 67-91 ms
 right after E05). The power source is polled through the whole run, not only at its ends.
 
@@ -163,9 +165,14 @@ async def run_experiment(
             "progress": progress,
         }
         probe_before, cooldown = await _cool_probe(cfg, **probe_args)
+        rep_probes: list[dict[str, Any]] = [{"before": probe_before, "cooldown": cooldown}]
         summaries: list[dict[str, Any]] = []
         slept_per_rep: list[float | None] = []
         for rep in range(cfg.repetitions):
+            if rep > 0 and cfg.measurement.rep_cooldown:
+                rep_probes[-1]["after"] = await _thermal_probe(cfg, "after", **probe_args)
+                rep_before, rep_wait = await _cool_probe(cfg, **probe_args)
+                rep_probes.append({"before": rep_before, "cooldown": rep_wait})
             workload = materialize(cfg, rep=rep, builder=builder)
             rep_path = storage.rep_dir(run_dir, rep)
             rep_path.mkdir()
@@ -207,6 +214,7 @@ async def run_experiment(
             )
 
         probe_after = await _thermal_probe(cfg, "after", **probe_args)
+        rep_probes[-1]["after"] = probe_after
         cross = aggregate(summaries)
         storage.write_json(cross, run_dir / "summary.json")
         storage.write_json(
@@ -248,6 +256,7 @@ async def run_experiment(
                     "before": probe_before,
                     "after": probe_after,
                     "cooldown": cooldown,
+                    **({"reps": rep_probes} if cfg.measurement.rep_cooldown else {}),
                 },
             ),
             run_dir / "metadata.json",

@@ -15,7 +15,7 @@ server:
 load:
   mode: closed
   concurrency: 8
-  requests: 150
+  requests: 50  # 150 per rep throttled the Mac by rep 3 (session 4); short reps, cooled between
 
 workload:
   classes:
@@ -25,3 +25,4 @@ workload:
 
 measurement:
   warmup: {requests: 20}
+  rep_cooldown: true

@@ -101,6 +101,18 @@ def test_a_run_that_starts_on_a_slowed_machine_is_unreportable(tmp_path: Path) -
     assert run.unreportable_reasons == ["thermal drift -29% (probe after vs before, TPOT p50)"]
 
 
+def test_a_run_probed_around_every_rep_reports_its_worst_rep(tmp_path: Path) -> None:
+    reps = [
+        {"before": {"tpot_p50_s": 0.050}, "after": {"tpot_p50_s": 0.053}},
+        {"before": {"tpot_p50_s": 0.050}, "after": {"tpot_p50_s": 0.060}},
+        {"before": {"tpot_p50_s": 0.051}, "after": {"tpot_p50_s": 0.052}},
+    ]
+    probe = {**_probes(0.050, 0.052)["thermal_probe"], "reps": reps}
+    run = _written_run(tmp_path, metadata={"thermal_probe": probe})
+    assert math.isclose(run.thermal_drift or 0.0, 0.20)
+    assert run.reportable is False
+
+
 def test_probe_drift_under_ten_percent_is_reportable(tmp_path: Path) -> None:
     run = _written_run(tmp_path, metadata=_probes(0.020, 0.0218))
     assert math.isclose(run.thermal_drift or 0.0, 0.09)

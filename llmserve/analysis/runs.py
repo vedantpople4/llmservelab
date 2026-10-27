@@ -98,16 +98,20 @@ class Run:
         """The thermal probe's TPOT p50 after the reps over its p50 before them, minus 1. Either
         sign means the machine changed under the run: positive is the fanless Mac slowing as it
         heats, negative is a run that started on a machine already slowed (session 2's h2-mixed
-        began at 80 ms against a 53 ms norm). None for runs without probes.
+        began at 80 ms against a 53 ms norm). None for runs without probes. A run probed around
+        every rep (`measurement.rep_cooldown`) reports its largest drift by magnitude.
 
         The probe is a fixed batch; the reps are not, since each materializes its own workload
         sample, so a rep-to-rep TPOT change can be the workload rather than the machine."""
         probe = self.metadata.get("thermal_probe") or {}
-        before = (probe.get("before") or {}).get("tpot_p50_s")
-        after = (probe.get("after") or {}).get("tpot_p50_s")
-        if not before or after is None:
-            return None
-        return float(after) / float(before) - 1
+        drifts = []
+        for pair in probe.get("reps") or [probe]:
+            before = (pair.get("before") or {}).get("tpot_p50_s")
+            after = (pair.get("after") or {}).get("tpot_p50_s")
+            if not before or after is None:
+                return None
+            drifts.append(float(after) / float(before) - 1)
+        return max(drifts, key=abs)
 
     def rep_dirs(self) -> list[Path]:
         return sorted(p for p in self.path.glob("rep-*") if p.is_dir())
