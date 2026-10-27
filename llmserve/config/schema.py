@@ -253,6 +253,9 @@ class Measurement(_Model):
     cooldown_s: NonNegativeFloat = 0
     request_timeout_s: PositiveFloat = 600
     samplers: Samplers = Samplers()
+    # Probe after each rep and wait for a cool Mac before the next (ADR-0013); for workloads
+    # that heat the fanless Mac within a run, such as E05's 4096-token prefills.
+    rep_cooldown: bool = False
 
 
 class ExperimentConfig(_Model):
@@ -276,5 +279,11 @@ class ExperimentConfig(_Model):
         return self
 
     def canonical(self) -> dict[str, Any]:
-        """JSON-compatible dump with every default filled in; the input to `config_hash`."""
-        return self.model_dump(mode="json")
+        """JSON-compatible dump with every default filled in; the input to `config_hash`.
+
+        `measurement.rep_cooldown` appears only when set, so configs written before it existed
+        keep their hashes and suites keep skipping their finished points."""
+        dump = self.model_dump(mode="json")
+        if not self.measurement.rep_cooldown:
+            del dump["measurement"]["rep_cooldown"]
+        return dump

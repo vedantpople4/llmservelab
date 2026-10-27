@@ -56,6 +56,10 @@ KV pool holds 52,784 tokens rather than about 130–140k.
   Amended October 2026 after Phase 3 sessions 2-4: the probe grew from 4 requests (one slow
   request moved the median past 10%), drift became two-sided, battery is polled rather than read
   at the ends, and the cool-down gate was added (E06 started at 67-91 ms right after E05).
+  Each probe now follows a 30 s idle pause (E03's before-probe caught its warm-up's tail). A
+  workload that heats the Mac within a run sets `measurement.rep_cooldown`: every rep is probed
+  before and after, waits for a cool Mac first, and the run's drift is its worst rep. E05 uses it
+  with 50 requests per rep instead of 150 (it throttled 35% by rep 3).
 
 ## Consequences
 
