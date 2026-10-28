@@ -3,7 +3,10 @@
 Series names differ across versions (`gpu_cache_usage_perc` vs `kv_cache_usage_perc`), so every
 sampled field maps to an ordered candidate list. A missing series is a loud `SamplerError` —
 a sampler that silently collected nothing would make a run look healthy while its server
-metrics are absent.
+metrics are absent. The exception is `OPTIONAL`: the running totals of vLLM's per-request
+queue, prefill and decode time histograms and of its tokens-per-step histogram (Phase 4). They
+are None when absent (the mock has none). The difference between two samples gives the mean
+over the requests finished, or the engine steps run, in between.
 
 The sampler scrapes once at `start()` (so the failure happens before any measured request),
 then every `1/hz` seconds until `stop()`. A failed mid-run scrape skips that tick and counts in
@@ -16,6 +19,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 import pyarrow as pa
@@ -29,6 +33,12 @@ SERVER_SCHEMA = pa.schema(
         ("preemptions_total", pa.float64()),
         ("prompt_tokens_total", pa.float64()),
         ("generation_tokens_total", pa.float64()),
+        ("finished_total", pa.float64()),
+        ("queue_time_s_total", pa.float64()),
+        ("prefill_time_s_total", pa.float64()),
+        ("decode_time_s_total", pa.float64()),
+        ("steps_total", pa.float64()),
+        ("step_tokens_total", pa.float64()),
     ]
 )
 
@@ -39,6 +49,14 @@ CANDIDATES: dict[str, tuple[str, ...]] = {
     "preemptions_total": ("vllm:num_preemptions_total", "vllm:preemptions_total"),
     "prompt_tokens_total": ("vllm:prompt_tokens_total",),
     "generation_tokens_total": ("vllm:generation_tokens_total",),
+}
+OPTIONAL: dict[str, tuple[str, ...]] = {
+    "finished_total": ("vllm:request_queue_time_seconds_count",),
+    "queue_time_s_total": ("vllm:request_queue_time_seconds_sum",),
+    "prefill_time_s_total": ("vllm:request_prefill_time_seconds_sum",),
+    "decode_time_s_total": ("vllm:request_decode_time_seconds_sum",),
+    "steps_total": ("vllm:iteration_tokens_total_count",),
+    "step_tokens_total": ("vllm:iteration_tokens_total_sum",),
 }
 
 
@@ -66,6 +84,12 @@ class ServerSample:
     preemptions_total: float
     prompt_tokens_total: float
     generation_tokens_total: float
+    finished_total: float | None = None
+    queue_time_s_total: float | None = None
+    prefill_time_s_total: float | None = None
+    decode_time_s_total: float | None = None
+    steps_total: float | None = None
+    step_tokens_total: float | None = None
 
 
 def parse_prometheus(text: str) -> dict[str, float]:
@@ -91,7 +115,7 @@ def parse_prometheus(text: str) -> dict[str, float]:
 
 def lookup(series: Mapping[str, float], field: str) -> float | None:
     """The first candidate series present for `field`, or None when the backend has none."""
-    for name in CANDIDATES[field]:
+    for name in {**CANDIDATES, **OPTIONAL}[field]:
         if name in series:
             return series[name]
     return None
@@ -105,7 +129,8 @@ def sample_from(series: Mapping[str, float], *, t_ns: int) -> ServerSample:
         if value is None:
             raise SamplerError(f"missing series for {field!r} (tried {list(CANDIDATES[field])})")
         values[field] = value
-    return ServerSample(t_ns=t_ns, **values)
+    optional: dict[str, Any] = {field: lookup(series, field) for field in OPTIONAL}
+    return ServerSample(t_ns=t_ns, **values, **optional)
 
 
 class ServerSampler:

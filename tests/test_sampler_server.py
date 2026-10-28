@@ -271,3 +271,26 @@ def test_server_idle_is_skipped_without_a_metrics_endpoint() -> None:
             )
 
     assert asyncio.run(run()) is None
+
+
+def test_vllm_timing_totals_are_read_when_present_and_none_otherwise() -> None:
+    histograms = [
+        'vllm:request_queue_time_seconds_count{engine="0"} 10',
+        'vllm:request_queue_time_seconds_sum{engine="0"} 2.5',
+        'vllm:request_prefill_time_seconds_sum{engine="0"} 4.0',
+        'vllm:request_decode_time_seconds_sum{engine="0"} 30.0',
+        'vllm:iteration_tokens_total_count{engine="0"} 400',
+        'vllm:iteration_tokens_total_sum{engine="0"} 3000',
+        'vllm:iteration_tokens_total_bucket{engine="0",le="8.0"} 350',
+    ]
+    full = sample_from(parse_prometheus(exposition() + "\n".join(histograms)), t_ns=1)
+    assert (
+        full.finished_total,
+        full.queue_time_s_total,
+        full.prefill_time_s_total,
+        full.decode_time_s_total,
+        full.steps_total,
+        full.step_tokens_total,
+    ) == (10, 2.5, 4.0, 30.0, 400, 3000)
+    bare = sample_from(parse_prometheus(exposition()), t_ns=1)
+    assert bare.queue_time_s_total is None and bare.steps_total is None
