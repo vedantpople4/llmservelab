@@ -263,3 +263,26 @@ def test_baseline_section_lists_e01_to_e07(run_factory: Any, tmp_path: Path) -> 
     assert "| e01 | — | — | — | — | Not yet run" in strict
     assert "| baseline | e01 |" in strict
     assert "server.kind is mock, not vllm-metal" in strict
+
+
+def test_breakdown_section_splits_baseline_time_by_phase(results: Path, tmp_path: Path) -> None:
+    root = tmp_path / "results"
+    shutil.copytree(results, root)
+    cfg = experiment_config(experiment="e01", repetitions=1)
+    run_dir, summary = run_in_process(cfg, tmp_path, allow_dirty=True)
+    out = tmp_path / "out"
+    md = build_report(root, out, dev=True).read_text()
+    section = md.split("## Where the time goes (E01–E07)", 1)[1].split("\n## ", 1)[0]
+    (row,) = [line for line in section.splitlines() if line.startswith("| e01 |")]
+    cells = [cell.strip() for cell in row.strip("|").split("|")]
+    assert cells[:3] == ["e01", "c", str(summary["per_rep"][0]["n_measured"])]
+    gateway, server, prefill, decode, e2e = (float(c) for c in cells[3:8])
+    assert abs(gateway + server + prefill + decode - e2e) < 0.002  # each cell rounds to 1 ms
+    assert (out / "figures" / "time_breakdown.png").is_file()
+    assert f"| e01 | `{run_dir.name}`" in md.split("**figures/time_breakdown.png**", 1)[1]
+
+
+def test_breakdown_section_needs_the_prefill_fit(run_factory: Any, tmp_path: Path) -> None:
+    run_factory(experiment_config(experiment="e01", repetitions=1))
+    md = build_report(tmp_path / "results", tmp_path / "dev", dev=True).read_text()
+    assert "Needs the H3 prefill fit: run the prompt-length suite." in md

@@ -28,6 +28,7 @@ import pandas as pd
 from matplotlib.figure import Figure
 
 from llmserve.analysis import plots
+from llmserve.analysis.breakdown import PHASES, class_breakdown
 from llmserve.analysis.capacity import Capacity, capacity_points, find_capacity
 from llmserve.analysis.hypotheses import (
     H2_CLASS,
@@ -98,6 +99,7 @@ class _Report:
         self.dev = dev
         self.excluded: list[Excluded] = []
         self.exhibits: list[Exhibit] = []
+        self.baseline: list[tuple[str, Run]] = []  # E01–E07 shown, filled by _baseline_section
         self._suites: dict[str, SuiteRuns | None] = {}
 
     def suite(self, names: Sequence[str]) -> SuiteRuns | None:
@@ -126,11 +128,15 @@ class _Report:
         return f"{DEV_BANNER}\n{text}" if self.dev else text
 
     def save(self, fig: Figure, name: str, suites: Iterable[SuiteRuns], title: str) -> str:
+        ref = self.figure(fig, name)
+        self.cite(ref, title, suites)
+        return f"![{title}]({ref})"
+
+    def figure(self, fig: Figure, name: str) -> str:
         figures = self.out_dir / "figures"
         figures.mkdir(parents=True, exist_ok=True)
         fig.savefig(figures / f"{name}.png", dpi=110, metadata={"Software": None})
-        self.cite(f"figures/{name}.png", title, suites)
-        return f"![{title}](figures/{name}.png)"
+        return f"figures/{name}.png"
 
     def cite(self, ref: str, title: str, suites: Iterable[SuiteRuns]) -> None:
         suites = list(suites)
@@ -175,6 +181,7 @@ def build_report(results_root: Path, out_dir: Path, *, dev: bool = False) -> Pat
     ]
     body = [
         *_baseline_section(r),
+        *_breakdown_section(r, prefill_fit(verdicts[2])),
         *_capacity_section(r, prefill_fit(verdicts[2])),
         *_concurrency_section(r, verdicts[0]),
         *_prompt_section(r, prompt, verdicts[2]),
@@ -258,6 +265,7 @@ def _baseline_section(r: _Report) -> list[str]:
             f"| {exp} | {load} | {workload} | {len(rates)} | {ok} | " + " | ".join(cells) + " |"
         )
     lines += ["", "Cells: across-rep mean [t-based 95% CI].", ""]
+    r.baseline = shown
     if shown:
         r.exhibits.append(
             Exhibit(
@@ -268,6 +276,50 @@ def _baseline_section(r: _Report) -> list[str]:
             )
         )
     return lines
+
+
+def _breakdown_section(r: _Report, prefill: PrefillFit | None) -> list[str]:
+    """Where the time goes in each E01–E07 workload class (plan Phase 4 item 4)."""
+    lines = ["## Where the time goes (E01–E07)", ""]
+    if not r.baseline:
+        return [*lines, "No baseline experiments to break down.", ""]
+    if prefill is None:
+        return [*lines, "Needs the H3 prefill fit: run the prompt-length suite.", ""]
+    frames = []
+    for exp, run in r.baseline:
+        frame = class_breakdown(run, prefill)
+        frame.insert(0, "experiment", exp)
+        frame.insert(0, "label", [f"{exp} {c}" for c in frame["workload_class"]])
+        frames.append(frame)
+    table = pd.concat(frames, ignore_index=True)
+    lines += [
+        "Mean seconds per measured request, by phase. Server wait is dispatch to first token "
+        "minus the unloaded prefill the H3 fit predicts: time in vLLM's queue plus prefill "
+        "slowed by sharing steps with running decodes. The phases add up to the mean E2E.",
+        "",
+        "| Exp | Class | n | Gateway wait (s) | Server wait (s) | Prefill (s) | Decode (s) "
+        "| E2E (s) | Server wait share |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for row in table.itertuples(index=False):
+        e2e = sum(getattr(row, p) for p in PHASES)
+        share = row.server_wait_s / e2e if e2e > 0 else math.nan
+        lines.append(
+            f"| {row.experiment} | {row.workload_class} | {row.n} | "
+            f"{row.gateway_wait_s:.3f} | {row.server_wait_s:.3f} | {row.prefill_s:.3f} | "
+            f"{row.decode_s:.3f} | {e2e:.3f} | {_num(100 * share, '.1f')}% |"
+        )
+    title = r.title("Where the time goes: mean seconds per request by phase (E01–E07)")
+    ref = r.figure(plots.time_breakdown(table, title=title), "time_breakdown")
+    r.exhibits.append(
+        Exhibit(
+            ref=ref,
+            title=title,
+            suite_files=tuple(f"configs/baseline/{exp}.yaml" for exp, _ in r.baseline),
+            runs=tuple(r.baseline),
+        )
+    )
+    return [*lines, "", f"![{title}]({ref})", ""]
 
 
 def _capacity_section(r: _Report, prefill: PrefillFit | None) -> list[str]:

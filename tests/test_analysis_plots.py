@@ -126,3 +126,22 @@ def test_bursty_timeseries_panels(tmp_path: Path) -> None:
     saves(fig, tmp_path)
     empty = plots.bursty_timeseries(requests, pd.DataFrame(), title="Bursty")
     assert empty.axes[1].get_lines() == []
+
+
+def test_time_breakdown_stacks_phases_to_e2e_and_to_100_percent(tmp_path: Path) -> None:
+    table = pd.DataFrame(
+        {
+            "label": ["e01 c", "e02 c"],
+            "gateway_wait_s": [0.0, 1.0],
+            "server_wait_s": [0.0, 2.0],
+            "prefill_s": [0.5, 0.5],
+            "decode_s": [1.5, 4.5],
+        }
+    )
+    fig = plots.time_breakdown(table, title="Time")
+    seconds, share = fig.axes
+    for ax, totals in ((seconds, [8.0, 2.0]), (share, [100.0, 100.0])):
+        last = ax.containers[-1]  # bars are drawn bottom-up: e02 first, then e01
+        assert [p.get_x() + p.get_width() for p in last] == totals
+    assert [t.get_text() for t in fig.legends[0].get_texts()] == list(plots.PHASE_LABELS.values())
+    saves(fig, tmp_path)
