@@ -5,15 +5,20 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 import httpx
+import pyarrow.parquet as pq
 import pytest
 from test_env_check import make_cfg as env_cfg
 from test_env_check import mock_client
 from test_experiment import make_cfg, run_in_process
+from test_sampler_power import fake_powermetrics
 
+from llmserve.analysis.runs import Run
+from llmserve.metrics import power
 from llmserve.runner import experiment, macos
 from llmserve.runner.env_check import check_server
 from llmserve.runner.run import drive as real_drive
@@ -51,6 +56,8 @@ def on_a_mac(monkeypatch: pytest.MonkeyPatch, *, pmset: str = AC) -> FakeCaffein
     monkeypatch.setattr(macos, "_pmset_batt", lambda: pmset)
     monkeypatch.setattr(macos, "_spawn", caffeinate.spawn)
     monkeypatch.setattr(macos, "_held", None)  # a fresh process
+    no_rule = "import sys; sys.exit('sudo: a password is required')"
+    monkeypatch.setattr(power, "ARGV", [sys.executable, "-c", no_rule])
     return caffeinate
 
 
@@ -217,3 +224,41 @@ def test_env_check_says_nothing_about_power_off_darwin() -> None:
             return (await check_server(env_cfg(), client=client)).checks
 
     assert not any("power" in line for line in asyncio.run(run()))
+
+
+def test_powermetrics_samples_every_rep_on_a_mac(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    on_a_mac(monkeypatch)
+    fake_powermetrics(monkeypatch, tmp_path)
+    run_dir, _ = run_in_process(make_cfg(), tmp_path, allow_dirty=True)
+    for rep in ("rep-00", "rep-01"):
+        rows = pq.read_table(run_dir / rep / "power.parquet").to_pylist()
+        assert rows and rows[0]["thermal_pressure"] == "Nominal"
+    md = json.loads((run_dir / "metadata.json").read_text())
+    assert "power" in md["samplers"]["active"]
+    assert md["samplers"]["power_hz"] == power.HZ
+    assert "power" not in md["samplers"]["errors"]
+
+
+def test_without_the_sudo_rule_the_run_goes_on_and_says_why(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    on_a_mac(monkeypatch)
+    run_dir, _ = run_in_process(make_cfg(), tmp_path, allow_dirty=True)
+    md = json.loads((run_dir / "metadata.json").read_text())
+    assert md["samplers"]["errors"]["power"] == "sudo: a password is required"
+    assert not (run_dir / "rep-00" / "power.parquet").exists()
+    events = (run_dir / "rep-00" / "events.jsonl").read_text()
+    assert '"sampler": "power"' in events
+    assert not (run_dir / "rep-01" / "events.jsonl").read_text()  # tried once, not every rep
+
+
+def test_run_reads_power_samples_back(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    on_a_mac(monkeypatch)
+    fake_powermetrics(monkeypatch, tmp_path)
+    run_dir, _ = run_in_process(make_cfg(), tmp_path, allow_dirty=True)
+    frame = Run(run_dir).power()
+    assert sorted(frame["rep"].unique()) == [0, 1]
+    assert (frame["gpu_active_ratio"] == 0.75).all()
+    assert (frame["t_s"] == frame["t_ns"] / 1e9).all()

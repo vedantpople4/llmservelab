@@ -170,9 +170,17 @@ class Run:
     def server(self) -> pd.DataFrame:
         """`/metrics` samples of every rep with `rep` and `t_s` (seconds on the run clock);
         empty when the server sampler never ran."""
+        return self._samples("server.parquet")
+
+    def power(self) -> pd.DataFrame:
+        """`powermetrics` samples of every rep, like `server()`; empty off macOS or without the
+        sudoers rule."""
+        return self._samples("power.parquet")
+
+    def _samples(self, name: str) -> pd.DataFrame:
         frames = []
         for rep, rep_path in self._reps():
-            path = rep_path / "server.parquet"
+            path = rep_path / name
             if path.exists():
                 frame = pq.read_table(path).to_pandas()
                 frame["rep"] = rep

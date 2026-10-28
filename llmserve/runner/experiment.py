@@ -19,8 +19,9 @@ cool-down gate: it repeats, with pauses, until the Mac probes
 cool, because heat carries from one experiment into the next (session 4's E06 started at 67-91 ms
 right after E05). The power source is polled through the whole run, not only at its ends.
 
-The samplers (NVML thread at `gpu_hz`, `/metrics` scraper at `server_hz`) run inside every
-repetition when the config asks for them and the backend supports them. A sampler that cannot
+The samplers (NVML thread at `gpu_hz`, `/metrics` scraper at `server_hz`, and on macOS
+`powermetrics` at its fixed 2 Hz) run inside every repetition when the config asks for them and
+the backend supports them. A sampler that cannot
 start or dies mid-run deactivates itself and is recorded in `metadata.samplers.errors` and in
 that rep's `events.jsonl`; a run is never failed for a missing metric (ADR-0010).
 """
@@ -46,7 +47,7 @@ from llmserve.client.capabilities import Capabilities, capabilities
 from llmserve.config import schema
 from llmserve.config.loader import config_hash
 from llmserve.config.schema import ExperimentConfig, Load
-from llmserve.metrics import latency
+from llmserve.metrics import latency, power
 from llmserve.metrics.gpu import GpuSampler
 from llmserve.metrics.server import ServerSampler, describe, lookup, parse_prometheus
 from llmserve.runner import macos, storage
@@ -182,7 +183,7 @@ async def run_experiment(
 
             rep_mark = macos.sleep_mark()
             t0_ns = clock()
-            gpu, server, events = await samplers.start()
+            gpu, server, power_sampler, events = await samplers.start()
             try:
                 records = await drive(
                     cfg,
@@ -194,7 +195,9 @@ async def run_experiment(
                     token_counter=token_counter,
                 )
             finally:
-                counts = await samplers.stop(gpu, server, events, rep_path)  # flush on a crash too
+                counts = await samplers.stop(  # flush on a crash too
+                    gpu, server, power_sampler, events, rep_path
+                )
             slept = macos.slept_s(rep_mark)
             slept_per_rep.append(slept)
             window = window_of(records, cfg, t0_ns=t0_ns)
@@ -209,7 +212,8 @@ async def run_experiment(
             progress(
                 f"rep {rep + 1}/{cfg.repetitions}: "
                 f"{summary['n_ok']}/{summary['n_requests']} ok{note} · "
-                f"samplers gpu {counts['gpu']} / server {counts['server']} rows · "
+                f"samplers gpu {counts['gpu']} / server {counts['server']} / "
+                f"power {counts['power']} rows · "
                 f"{counts['events']} event(s)"
             )
 
@@ -234,6 +238,7 @@ async def run_experiment(
                     "active": samplers.active,  # started at least once; wanted-but-absent -> errors
                     "gpu_hz": cfg.measurement.samplers.gpu_hz,
                     "server_hz": cfg.measurement.samplers.server_hz,
+                    "power_hz": power.HZ if samplers.power_wanted else 0,
                     "dcgm": cfg.measurement.samplers.dcgm,
                     "errors": samplers.errors,
                     "server_failed_scrapes": samplers.server_failures,
@@ -295,6 +300,8 @@ class _Samplers:
         self.server_hz = sampler_cfg.server_hz
         self._gpu_on = sampler_cfg.gpu_hz > 0 and caps.gpu_metrics
         self._server_on = sampler_cfg.server_hz > 0 and caps.metrics_endpoint
+        self.power_wanted = macos.is_darwin()
+        self._power_on = self.power_wanted
         self._gpu_capable = caps.gpu_metrics
         self._metrics_capable = caps.metrics_endpoint
         self._kind = kind
@@ -320,12 +327,15 @@ class _Samplers:
             server = f"off ({self._kind} has no /metrics)"
         else:
             server = f"{self.server_hz:g} Hz ({self._base}/metrics)"
-        return f"samplers: gpu {gpu} · server {server}"
+        power_line = f"{power.HZ:g} Hz (powermetrics)" if self.power_wanted else "off (not macOS)"
+        return f"samplers: gpu {gpu} · server {server} · power {power_line}"
 
     async def start(
         self,
-    ) -> tuple[GpuSampler | None, ServerSampler | None, list[dict[str, Any]]]:
-        """`(gpu, server, events)` for the coming repetition."""
+    ) -> tuple[
+        GpuSampler | None, ServerSampler | None, power.PowerSampler | None, list[dict[str, Any]]
+    ]:
+        """`(gpu, server, power, events)` for the coming repetition."""
         events: list[dict[str, Any]] = []
         gpu: GpuSampler | None = None
         if self._gpu_on:
@@ -351,18 +361,29 @@ class _Samplers:
                 server = server_candidate
                 if "server" not in self.active:
                     self.active.append("server")
-        return gpu, server, events
+        power_sampler: power.PowerSampler | None = None
+        if self._power_on:
+            power_candidate = power.PowerSampler(self._clock)
+            if await asyncio.to_thread(power_candidate.start):
+                power_sampler = power_candidate
+                if "power" not in self.active:
+                    self.active.append("power")
+            else:
+                self._power_on = False
+                self._record("power", power_candidate.error or "powermetrics did not start", events)
+        return gpu, server, power_sampler, events
 
     async def stop(
         self,
         gpu: GpuSampler | None,
         server: ServerSampler | None,
+        power_sampler: power.PowerSampler | None,
         events: list[dict[str, Any]],
         rep_path: Path,
     ) -> dict[str, int]:
-        """Flush both samplers into the repetition directory; returns `{"gpu", "server", "events"}`
-        row counts for the repetition's progress line."""
-        counts = {"gpu": 0, "server": 0, "events": 0}
+        """Flush the samplers into the repetition directory; returns `{"gpu", "server", "power",
+        "events"}` row counts for the repetition's progress line."""
+        counts = {"gpu": 0, "server": 0, "power": 0, "events": 0}
         if gpu is not None:
             gpu_samples = gpu.stop()
             storage.write_gpu(rep_path / "gpu.parquet", gpu_samples)
@@ -378,6 +399,14 @@ class _Samplers:
             if server.error:
                 self._server_on = False
                 self._record("server", server.error, events)
+        if power_sampler is not None:
+            power_samples = await asyncio.to_thread(power_sampler.stop)
+            storage.write_power(rep_path / "power.parquet", power_samples)
+            counts["power"] = len(power_samples)
+            if power_sampler.error:
+                self._record("power", power_sampler.error, events)
+                if not power_samples:
+                    self._power_on = False
         storage.write_events(rep_path / "events.jsonl", events)
         counts["events"] = len(events)  # sampler failures land here during the flush
         return counts
