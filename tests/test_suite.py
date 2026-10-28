@@ -44,6 +44,8 @@ CONTRACT_SUITES = {
     "bursty",
     "h2-mixed",
     "h2-interactive",
+    "profile-p128",
+    "profile-mixed",
     "dev-concurrency",
     "dev-prompt-length",
 }

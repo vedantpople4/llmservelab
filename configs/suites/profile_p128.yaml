@@ -1,0 +1,18 @@
+# Profiling (plan Phase 4 item 2): GPU activity, power and energy per token against request rate
+# for 128/128, up to its capacity of 0.4 req/s.
+suite: profile-p128
+description: >-
+  E01's 128/128 workload under Poisson arrivals at 0.1 to 0.4 req/s (capacity) for 300 s each
+  (warm-up 30 s, cool-down 15 s trimmed), with powermetrics and vLLM's step and timing totals
+  sampled. One repetition per rate: these runs describe where time and energy go, they are not
+  latency measurements.
+base: ../baseline/e01.yaml
+set:
+  repetitions: 1
+  load: {mode: open, arrival: {process: poisson}, duration_s: 300}
+  measurement.warmup_s: 30
+  measurement.cooldown_s: 15
+sweep:
+  field: load.arrival.rate
+  values: [0.1, 0.2, 0.3, 0.4]
+  label: "r{value:.2f}"

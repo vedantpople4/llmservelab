@@ -1,0 +1,15 @@
+# Profiling (plan Phase 4 items 2 and 3): one long mixed run for GPU frequency and thermal
+# pressure over time, KV usage against TTFT, and vLLM's own queue/prefill/decode split.
+suite: profile-mixed
+description: >-
+  E07's mixed workload under Poisson arrivals at 0.16 req/s, rho = 0.8 of its 0.2 req/s
+  capacity, for 1800 s (warm-up 120 s, cool-down 60 s trimmed), with powermetrics and vLLM's
+  step and timing totals sampled. One repetition.
+base: ../baseline/e07.yaml
+set:
+  repetitions: 1
+  load: {mode: open, arrival: {process: poisson, rate: 0.16}, duration_s: 1800}
+  measurement.warmup_s: 120
+  measurement.cooldown_s: 60
+points:
+  - label: r0p16
