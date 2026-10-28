@@ -4,15 +4,15 @@
 results/<experiment>/<run_id>/          run_id = <utc-ts>-<config_hash8>-<git_sha7>
   config.resolved.yaml  metadata.json  workload.parquet  summary.json
   rep-00/ workload.parquet requests.parquet chunks.parquet summary.json
-         gpu.parquet server.parquet events.jsonl
+         gpu.parquet server.parquet power.parquet events.jsonl
   rep-01/ ...
 ```
 
 `workload.parquet` at the run root is rep 0's file — the same bytes `llmserve generate-workload
 --rep 0` produces for this config, so the exit check's "identical workload file" has one obvious
 path; each repetition keeps its own copy under `rep-NN/` because seeds differ per rep (ADR-0004).
-`gpu.parquet`, `server.parquet` and `events.jsonl` are written per rep by the samplers (Phase 2
-item 7), for the reps where the sampler actually ran.
+`gpu.parquet`, `server.parquet`, `power.parquet` (macOS) and `events.jsonl` are written per rep
+by the samplers (Phase 2 item 7, Phase 4 item 1), for the reps where the sampler actually ran.
 
 Every write is deterministic given its inputs (sorted JSON keys, fixed parquet schema), so
 reruns with the same seed are byte-comparable.
@@ -32,6 +32,7 @@ import yaml
 
 from llmserve.config.schema import ExperimentConfig
 from llmserve.metrics.gpu import GPU_SCHEMA, GpuSample
+from llmserve.metrics.power import POWER_SCHEMA, PowerSample
 from llmserve.metrics.records import CHUNK_SCHEMA, REQUEST_SCHEMA, RequestRecord
 from llmserve.metrics.server import SERVER_SCHEMA, ServerSample
 
@@ -73,6 +74,10 @@ def write_gpu(path: Path, samples: list[GpuSample]) -> None:
 
 def write_server(path: Path, samples: list[ServerSample]) -> None:
     pq.write_table(pa.Table.from_pylist([asdict(s) for s in samples], schema=SERVER_SCHEMA), path)
+
+
+def write_power(path: Path, samples: list[PowerSample]) -> None:
+    pq.write_table(pa.Table.from_pylist([asdict(s) for s in samples], schema=POWER_SCHEMA), path)
 
 
 def write_events(path: Path, events: list[dict[str, Any]]) -> None:

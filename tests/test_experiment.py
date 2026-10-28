@@ -251,6 +251,7 @@ def test_closed_benchmark_end_to_end(tmp_path: Path) -> None:
         "active": ["server"],
         "gpu_hz": 10,
         "server_hz": 2,
+        "power_hz": 0,
         "dcgm": "auto",
         "errors": {},
         "server_failed_scrapes": 0,
@@ -297,6 +298,7 @@ def test_gpu_sampler_runs_and_is_recorded(tmp_path: Path, monkeypatch: pytest.Mo
         "active": ["gpu", "server"],  # both are fed: a fake GPU and the mock's /metrics
         "gpu_hz": 10,
         "server_hz": 2,
+        "power_hz": 0,
         "dcgm": "auto",
         "errors": {},
         "server_failed_scrapes": 0,

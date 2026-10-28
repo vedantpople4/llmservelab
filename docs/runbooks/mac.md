@@ -26,6 +26,23 @@ then rerun everything reported; results do not carry across versions.
 Homebrew also works (`brew install vllm-project/vllm-metal/vllm-metal`), but it refuses to
 install with outdated Xcode Command Line Tools.
 
+### Power sampling (optional)
+
+`powermetrics` needs root. This sudoers rule lets the harness run exactly the command in
+`llmserve/metrics/power.py` (`ARGV`) without a password, and nothing else. It allows no `-o`,
+so it cannot write files as root:
+
+```bash
+printf '%s ALL=(root) NOPASSWD: /usr/bin/powermetrics --samplers cpu_power\\,gpu_power\\,thermal --format plist --sample-rate 500 --buffer-size 0\n' "$(whoami)" > /tmp/llmserve-powermetrics
+visudo -cf /tmp/llmserve-powermetrics
+sudo install -m 0440 -o root -g wheel /tmp/llmserve-powermetrics /etc/sudoers.d/llmserve-powermetrics
+sudo -n -l | grep powermetrics   # the rule is active
+```
+
+Each rep then writes `power.parquet` at 2 Hz: GPU active ratio and frequency, CPU, GPU, ANE and
+combined power, and thermal pressure. Without the rule, runs go on without it and
+`metadata.samplers.errors.power` says why. Changing `ARGV` means reinstalling the rule.
+
 ## Serve
 
 ```bash
@@ -85,7 +102,9 @@ Platform notes:
 
 - `min_tokens` is rejected by the server, so the client omits it (`min_tokens_param`); output
   length is forced with `ignore_eos` + `max_tokens`.
-- There is no NVML. `/metrics` gives running and waiting counts, KV-cache use and preemptions.
+- There is no NVML. `/metrics` gives running and waiting counts, KV-cache use and preemptions;
+  `powermetrics` gives GPU activity, frequency, power and thermal pressure (sudoers rule above).
+  GPU active ratio only means "the GPU was busy": it reads high during memory-bound decode.
 - The KV pool is ≈ 53k tokens at `--gpu-memory-utilization 0.5`. Higher values page into swap.
 - The model's `generation_config.json` overrides default sampling (temperature 0.7, repetition
   penalty 1.05). Output length is forced, so this changes the text, not the token count.
