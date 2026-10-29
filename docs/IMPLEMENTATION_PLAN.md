@@ -538,6 +538,8 @@ Work items:
 Exit check (**MVP, PRD §42**): all MVP items are working end to end, and there is a written answer,
 backed by a trace, to "where does the time go" for each workload class.
 
+The answer is [docs/findings/where-the-time-goes.md](findings/where-the-time-goes.md).
+
 ### Phase 5: Scheduling baselines (2 weeks)
 
 **Goal:** implement the simple policies, compare them fairly, and find the concrete weakness that

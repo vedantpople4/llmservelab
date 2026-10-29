@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import astuple, dataclass
 
+import numpy as np
 import pandas as pd
 
 from llmserve.analysis.runs import Run
@@ -25,6 +26,7 @@ from llmserve.metrics.records import RequestRecord
 from llmserve.scheduler.estimators import PrefillFit
 
 PHASES = ("gateway_wait_s", "server_wait_s", "prefill_s", "decode_s")
+COHORT_GAP_S = 0.25
 
 
 @dataclass(frozen=True)
@@ -70,3 +72,34 @@ def class_breakdown(run: Run, prefill: PrefillFit) -> pd.DataFrame:
     out = grouped[list(PHASES)].mean()
     out.insert(0, "n", grouped.size())
     return out.reset_index()
+
+
+def dispatch_cohorts(run: Run, *, gap_s: float = COHORT_GAP_S) -> pd.DataFrame:
+    """Measured ok requests grouped into cohorts dispatched together: a new cohort starts after a
+    gap of more than `gap_s` between consecutive dispatches. Closed-loop requests of one fixed
+    length finish together and are replaced together, so vLLM prefills each cohort as one batch
+    and every member's TTFT is the cohort's prefill, not its own.
+
+    Columns: `rep`, `size`, `prompt_tokens` (the cohort's sum), `ttft_s` (its members' median)."""
+    rows = []
+    for rep_path in run.rep_dirs():
+        rep = int(rep_path.name.removeprefix("rep-"))
+        records = sorted(
+            (r for r in run.measured(rep) if latency.ttft_server(r) is not None),
+            key=lambda r: r.t_dispatch or 0,
+        )
+        if not records:
+            continue
+        dispatch_s = np.array([r.t_dispatch or 0 for r in records], dtype=float) / 1e9
+        starts = np.r_[0, np.flatnonzero(np.diff(dispatch_s) > gap_s) + 1, len(records)]
+        for lo, hi in zip(starts[:-1], starts[1:], strict=True):
+            members = records[lo:hi]
+            rows.append(
+                (
+                    rep,
+                    len(members),
+                    sum(r.prompt_tokens_req for r in members),
+                    float(np.median([latency.ttft_server(r) or 0.0 for r in members])),
+                )
+            )
+    return pd.DataFrame(rows, columns=["rep", "size", "prompt_tokens", "ttft_s"])

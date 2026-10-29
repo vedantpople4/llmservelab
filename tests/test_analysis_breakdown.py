@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
+import pytest
 from conftest import RunFactory, experiment_config
 
-from llmserve.analysis.breakdown import PHASES, Phases, class_breakdown, phases
+from llmserve.analysis.breakdown import PHASES, Phases, class_breakdown, dispatch_cohorts, phases
+from llmserve.analysis.runs import Run
 from llmserve.metrics import latency
 from llmserve.metrics.records import RequestRecord, RequestStatus
 from llmserve.scheduler.estimators import PrefillFit
@@ -74,3 +77,22 @@ def test_class_means_add_up_to_mean_e2e(run_factory: RunFactory) -> None:
     for row in table.itertuples(index=False):
         e2e = [latency.e2e(r) or 0.0 for r in measured if r.workload_class == row.workload_class]
         assert math.isclose(sum(getattr(row, p) for p in PHASES), sum(e2e) / len(e2e))
+
+
+def test_cohorts_split_on_dispatch_gaps(
+    run_factory: RunFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = run_factory(experiment_config(repetitions=1))
+
+    def at(dispatch: float, first: float) -> RequestRecord:
+        return replace(
+            record(dispatch=dispatch, first=first, last=first + 1), request_id=f"{dispatch}"
+        )
+
+    fake = [at(0.0, 2.0), at(0.1, 2.1), at(0.2, 2.2), at(5.0, 6.0), at(5.3, 6.4)]
+    fake.append(record(dispatch=0.15, first=9.0, last=10.0, ok=False))  # failed: not counted
+    monkeypatch.setattr(Run, "measured", lambda self, rep: fake)
+    cohorts = dispatch_cohorts(run)
+    assert cohorts["size"].tolist() == [3, 1, 1]  # 0.3 s apart is past the 0.25 s gap
+    assert cohorts["prompt_tokens"].tolist() == [384, 128, 128]
+    assert cohorts["ttft_s"].tolist() == pytest.approx([2.0, 1.0, 1.1])

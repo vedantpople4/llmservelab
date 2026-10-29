@@ -187,6 +187,10 @@ def test_dev_mode_banners_the_report_and_every_figure(
     assert "amended in October 2026" in md
     assert "growth on raw TTFT" not in md  # the prompt-length suite gave a prefill fit
     assert "None: development mode includes every run" in md
+    cohorts = md.split("#### Why TTFT exceeds one prompt's prefill", 1)[1].split("\n#", 1)[0]
+    assert [
+        line.split(" | ")[0] for line in cohorts.splitlines() if line[:3] in ("| 1", "| 2", "| 4")
+    ] == ["| 1", "| 2", "| 4"]
 
 
 def test_dev_mode_writes_a_loadable_cost_model(results: Path, tmp_path: Path) -> None:
