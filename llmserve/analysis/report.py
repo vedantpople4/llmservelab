@@ -40,6 +40,7 @@ from llmserve.analysis.hypotheses import (
     prefill_fit,
     prefill_points,
 )
+from llmserve.analysis.profile import Profile, kv_at_dispatch, profile
 from llmserve.analysis.runs import Run, latest_run
 from llmserve.analysis.stats import Estimate, mean_ci
 from llmserve.analysis.suites import SuiteRuns, load_suite_runs, suite_file_for, sweep_table
@@ -57,6 +58,8 @@ CAPACITY = (
     ("interactive", "capacity-interactive"),
 )
 BURSTY = ("bursty",)
+PROFILE_P128 = ("profile-p128",)
+PROFILE_MIXED = ("profile-mixed",)
 H2_MIXED = ("h2-mixed",)
 H2_HOMOGENEOUS = ("h2-interactive",)
 DEV_SUITES = frozenset({"dev-concurrency", "dev-prompt-length"})
@@ -182,6 +185,7 @@ def build_report(results_root: Path, out_dir: Path, *, dev: bool = False) -> Pat
     body = [
         *_baseline_section(r),
         *_breakdown_section(r, prefill_fit(verdicts[2])),
+        *_profile_section(r, prefill_fit(verdicts[2])),
         *_capacity_section(r, prefill_fit(verdicts[2])),
         *_concurrency_section(r, verdicts[0]),
         *_prompt_section(r, prompt, verdicts[2]),
@@ -320,6 +324,126 @@ def _breakdown_section(r: _Report, prefill: PrefillFit | None) -> list[str]:
         )
     )
     return [*lines, "", f"![{title}]({ref})", ""]
+
+
+def _profile_section(r: _Report, prefill: PrefillFit | None) -> list[str]:
+    """What vLLM and the Mac did under load (plan Phase 4 items 1 to 3): vLLM's own split of
+    each request, GPU activity, power, energy per token and thermal pressure."""
+    lines = ["## Engine and power profile", ""]
+    suites = [s for s in (r.suite(PROFILE_P128), r.suite(PROFILE_MIXED)) if s and s.points]
+    if not suites:
+        return [*lines, r.missing(PROFILE_P128), "", r.missing(PROFILE_MIXED), ""]
+    lines += [
+        "One repetition per point, whole reps (warm-up and cool-down included). Queue, prefill "
+        "and decode are vLLM's own per-request means; tokens per step is its mean batch. GPU "
+        "active is 1 − idle ratio, which reads high during memory-bound decode too. Energy is "
+        "CPU + GPU + ANE over the rep, idle time included, per generated token. Throttled is the "
+        "share of samples with thermal pressure above Nominal.",
+        "",
+        "| Suite | Point | Rate (req/s) | Finished | vLLM queue (s) | vLLM prefill (s) "
+        "| vLLM decode (s) | Tokens/step | Mean running | Peak KV | GPU active | GPU MHz "
+        "| Power (W) | J/token | Throttled |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    profiles: dict[str, list[tuple[float | None, Profile]]] = {}
+    for suite in suites:
+        for point in suite.points:
+            p = profile(point.run)
+            rate = getattr(point.run.config.load.arrival, "rate", None) or point.value
+            profiles.setdefault(suite.suite, []).append((rate, p))
+            lines.append(f"| {suite.suite} | {point.label} | {_num(rate)} | {_profile_row(p)} |")
+        r.cite(
+            f"table: engine and power profile ({suite.suite})", "Engine and power profile", [suite]
+        )
+    lines.append("")
+
+    p128 = [(rate, p) for rate, p in profiles.get("profile-p128", []) if p.power is not None]
+    if p128:
+        table = pd.DataFrame(
+            [
+                {
+                    "rate_rps": rate,
+                    "gpu_active": p.power.gpu_active,
+                    "joules_per_token": p.power.joules_per_token,
+                }
+                for rate, p in p128
+                if p.power is not None
+            ]
+        )
+        title = "GPU activity and energy per output token vs offered rate (128/128)"
+        fig = plots.profile_vs_rate(table, title=r.title(title))
+        lines += [r.save(fig, "profile_vs_rate", suites[:1], title), ""]
+
+    mixed = r.suite(PROFILE_MIXED)
+    if mixed is not None and mixed.points:
+        run = mixed.points[0].run
+        server, power = run.server(), run.power()
+        server = server[server["rep"] == 0] if len(server) else server
+        power = power[power["rep"] == 0] if len(power) else power
+        title = "The mixed profile run over time, rep 0"
+        fig = plots.profile_timeline(server, power, title=r.title(title))
+        lines += [r.save(fig, "profile_timeline", [mixed], title), ""]
+        title = "TTFT vs KV cache used at dispatch (mixed)"
+        fig = plots.kv_vs_ttft(kv_at_dispatch(run), title=r.title(title))
+        lines += [r.save(fig, "kv_vs_ttft", [mixed], title), ""]
+        lines += _mixed_split(run, profiles["profile-mixed"][0][1], prefill)
+    return lines
+
+
+def _profile_row(p: Profile) -> str:
+    e, w = p.engine, p.power
+    cells = [
+        _num(e and e.finished),
+        _num(e and e.queue_s, ".2f"),
+        _num(e and e.prefill_s, ".2f"),
+        _num(e and e.decode_s, ".1f"),
+        _num(e and e.tokens_per_step, ".1f"),
+        _num(p.running_mean, ".1f"),
+        f"{_num(100 * p.kv_peak, '.0f')}%",
+        f"{_num(w and 100 * w.gpu_active, '.0f')}%",
+        _num(w and w.gpu_freq_mhz, ".0f"),
+        _num(w and w.power_w, ".1f"),
+        _num(w and w.joules_per_token, ".2f"),
+        f"{_num(w and 100 * w.throttled_share, '.0f')}%",
+    ]
+    return " | ".join(cells)
+
+
+def _mixed_split(run: Run, p: Profile, prefill: PrefillFit | None) -> list[str]:
+    """The mixed run's per-class breakdown, with its server wait split by vLLM's own means."""
+    if prefill is None:
+        return []
+    table = class_breakdown(run, prefill)
+    lines = [
+        "Where the time goes in the mixed profile run, by class (mean seconds per measured "
+        "request, as in the E01–E07 breakdown):",
+        "",
+        "| Class | n | Server wait (s) | Prefill (s) | Decode (s) | E2E (s) |",
+        "|---|---|---|---|---|---|",
+    ]
+    for row in table.itertuples(index=False):
+        e2e = sum(getattr(row, ph) for ph in PHASES)
+        lines.append(
+            f"| {row.workload_class} | {row.n} | {row.server_wait_s:.2f} | {row.prefill_s:.2f} "
+            f"| {row.decode_s:.1f} | {e2e:.1f} |"
+        )
+    lines.append("")
+    if p.engine is not None and len(table):
+        n = table["n"].to_numpy(dtype=float)
+        to_first = ((table["server_wait_s"] + table["prefill_s"]).to_numpy() * n).sum() / n.sum()
+        unloaded = (table["prefill_s"].to_numpy() * n).sum() / n.sum()
+        e = p.engine
+        outside = to_first - e.queue_s - e.prefill_s
+        lines += [
+            f"Across classes, dispatch to first token averages {to_first:.2f} s, of which the "
+            f"unloaded prefill fit accounts for {unloaded:.2f} s. vLLM counts {e.queue_s:.2f} s "
+            f"in its waiting queue and {e.prefill_s:.2f} s from scheduling to first token, "
+            "which includes prefill slowed by sharing steps with running decodes. The remaining "
+            f"{outside:.2f} s is outside vLLM's request timers (HTTP, tokenization, streaming) "
+            "or the difference between vLLM's whole-rep means and the measured window.",
+            "",
+        ]
+    return lines
 
 
 def _capacity_section(r: _Report, prefill: PrefillFit | None) -> list[str]:
@@ -642,8 +766,10 @@ def _poly(a: float, b: float, c: float) -> str:
 
 
 def _num(value: Any, fmt: str = "g") -> str:
-    if value is None or (isinstance(value, float) and not math.isfinite(value)):
-        return "—" if value is None else "∞"
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return "—"
+    if isinstance(value, float) and math.isinf(value):
+        return "∞"
     return format(value, fmt)
 
 
