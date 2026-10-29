@@ -1,4 +1,4 @@
-"""Phase 3 figures (plan Phase 3 item 3). Each function takes tidy inputs and returns a Figure.
+"""Report figures (plan Phase 3 item 3 and Phase 4). Each takes tidy inputs and returns a Figure.
 
 Figures are built on `matplotlib.figure.Figure` directly (Agg, no pyplot state), so building
 one has no global side effects and saving it is deterministic. Colors are the Okabe–Ito
@@ -233,3 +233,84 @@ def _log2_x(ax: Axes, values: pd.Series) -> None:
     ax.xaxis.set_major_locator(FixedLocator(ticks))
     ax.xaxis.set_minor_locator(NullLocator())
     ax.set_xticklabels([f"{t:g}" for t in ticks])
+
+
+@_styled
+def profile_vs_rate(table: pd.DataFrame, *, title: str) -> Figure:
+    """GPU active share (%) and energy per output token (J) vs offered rate, one point per run.
+    `table` has `rate_rps`, `gpu_active` (0 to 1) and `joules_per_token`."""
+    fig = _figure(ncols=2, width=11)
+    gpu_ax, energy_ax = fig.axes
+    rows = table.sort_values("rate_rps")
+    gpu_ax.plot(rows["rate_rps"], rows["gpu_active"] * 100, marker="o", color=PALETTE[0])
+    energy_ax.plot(rows["rate_rps"], rows["joules_per_token"], marker="o", color=PALETTE[1])
+    gpu_ax.set_ylabel("GPU active (%)")
+    gpu_ax.set_ylim(0, 100)
+    energy_ax.set_ylabel("energy per output token (J)")
+    energy_ax.set_ylim(bottom=0)
+    for ax in fig.axes:
+        ax.set_xlabel("offered rate (req/s, Poisson)")
+    fig.suptitle(title)
+    return fig
+
+
+@_styled
+def profile_timeline(server: pd.DataFrame, power: pd.DataFrame, *, title: str) -> Figure:
+    """One rep over time: vLLM's KV usage and waiting queue, GPU frequency, and combined power
+    with samples under thermal pressure above Nominal shaded. Both frames are `Run.server()` /
+    `Run.power()` filtered to that rep; time 0 is the first sample of either."""
+    fig = _figure(nrows=4, height=9, sharex=True)
+    kv_ax, queue_ax, freq_ax, power_ax = fig.axes
+    starts = [float(f["t_s"].min()) for f in (server, power) if len(f)]
+    t0 = min(starts) if starts else 0.0
+    if len(server):
+        server_s = server["t_s"].astype(float) - t0
+        kv_ax.plot(server_s, server["kv_usage"] * 100, color=PALETTE[2])
+        queue_ax.plot(server_s, server["waiting"], color=PALETTE[1])
+    if len(power):
+        power_s = (power["t_s"].astype(float) - t0).to_numpy()
+        freq_ax.plot(power_s, power["gpu_freq_mhz"], color=PALETTE[0], linewidth=0.6)
+        power_ax.plot(power_s, power["combined_power_mw"] / 1e3, color=PALETTE[3], linewidth=0.6)
+        power_ax.fill_between(
+            power_s,
+            0,
+            1,
+            where=(power["thermal_pressure"] != "Nominal").to_numpy(),
+            transform=power_ax.get_xaxis_transform(),
+            color=PALETTE[4],
+            alpha=0.15,
+            linewidth=0,
+            label="thermal pressure above Nominal",
+        )
+        power_ax.legend(loc="upper right")
+    kv_ax.set_ylabel("KV cache used (%)")
+    queue_ax.set_ylabel("waiting (requests)")
+    freq_ax.set_ylabel("GPU frequency (MHz)")
+    power_ax.set_ylabel("CPU + GPU + ANE (W)")
+    power_ax.set_xlabel("time since first sample (s)")
+    fig.suptitle(title)
+    return fig
+
+
+@_styled
+def kv_vs_ttft(frame: pd.DataFrame, *, title: str) -> Figure:
+    """TTFT (s) against vLLM's KV usage at dispatch (%), one point per request, by class.
+    `frame` is `profile.kv_at_dispatch`."""
+    fig = _figure()
+    (ax,) = fig.axes
+    for i, (name, rows) in enumerate(frame.groupby("workload_class", sort=True)):
+        ax.scatter(
+            rows["kv_usage"] * 100,
+            rows["ttft_s"],
+            s=10,
+            alpha=0.6,
+            color=PALETTE[i % len(PALETTE)],
+            label=str(name),
+        )
+    ax.set_xlabel("KV cache used at dispatch (%)")
+    ax.set_ylabel("TTFT (s)")
+    ax.set_xlim(0, 100)
+    if len(frame):
+        ax.legend(loc="upper left")
+    fig.suptitle(title)
+    return fig

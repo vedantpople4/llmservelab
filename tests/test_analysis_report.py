@@ -22,7 +22,14 @@ from llmserve.scheduler.estimators import CostModel
 DELAY = DelayModel(
     ttft_base_s=0.004, ttft_per_prompt_token_s=5e-5, token_base_s=0.001, token_in_flight_s=2e-4
 )
-MISSING = ("concurrency-mixed", "output-length", "capacity-mixed", "capacity-interactive")
+MISSING = (
+    "concurrency-mixed",
+    "output-length",
+    "capacity-mixed",
+    "capacity-interactive",
+    "profile-p128",
+    "profile-mixed",
+)
 
 
 def _classes(*names: str) -> dict[str, Any]:
