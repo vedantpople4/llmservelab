@@ -107,6 +107,11 @@ def test_open_loop_with_rho() -> None:
         ({"server.api_key_env": "no-spaces-allowed"}, "server.api_key_env"),
         ({"server.scheduling_policy": "priority"}, "vLLM feature"),
         ({"gateway": {"scheduler": {"name": "fifo2"}}}, "unknown scheduler"),
+        (
+            {"gateway": {"enabled": True, "scheduler": {"name": "sjf", "params": {"bach": 8}}}},
+            "scheduler 'sjf'",
+        ),
+        ({"gateway": {"output_estimator": "class_prior"}}, "Phase 6"),
         ({"server.typo": True}, "Extra inputs"),
         ({"experiment": "Bad Name"}, "pattern"),
     ],
@@ -140,19 +145,14 @@ def test_duplicate_class_names() -> None:
 
 
 def test_scheduler_requires_gateway() -> None:
-    # Only FIFO is registered so far; register a stand-in to exercise the rule.
-    from llmserve.scheduler import registry
-    from llmserve.scheduler.fifo import FIFOScheduler
-
-    registry.SCHEDULERS["other"] = FIFOScheduler
-    try:
-        with pytest.raises(ValidationError, match="gateway disabled"):
-            ExperimentConfig.model_validate(with_(gateway={"scheduler": {"name": "other"}}))
-        ExperimentConfig.model_validate(
-            with_(gateway={"enabled": True, "scheduler": {"name": "other"}})
+    with pytest.raises(ValidationError, match="gateway disabled"):
+        ExperimentConfig.model_validate(with_(gateway={"scheduler": {"name": "spf"}}))
+    cfg = ExperimentConfig.model_validate(
+        with_(
+            gateway={"enabled": True, "scheduler": {"name": "priority", "params": {"aging_s": 30}}}
         )
-    finally:
-        del registry.SCHEDULERS["other"]
+    )
+    assert cfg.gateway.scheduler.params == {"aging_s": 30}
 
 
 def write(path: Path, data: dict[str, Any]) -> Path:

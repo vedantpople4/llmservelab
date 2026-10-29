@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-
-from llmserve.scheduler.base import Request, Scheduler, SystemState
+from llmserve.scheduler.base import Request, StaticKeyScheduler
 
 
-class FIFOScheduler(Scheduler):
+class FIFOScheduler(StaticKeyScheduler):
     name = "fifo"
 
-    def select_next(self, waiting: Sequence[Request], state: SystemState) -> Request | None:
-        return min(waiting, key=lambda r: r.arrival_time, default=None)
+    def key(self, r: Request) -> float:
+        return r.arrival_time

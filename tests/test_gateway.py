@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from llmserve.gateway.core import Gateway, Sender
+from llmserve.gateway.core import ESTIMATORS, Gateway, Sender
 from llmserve.metrics.records import RequestRecord, RequestStatus
 from llmserve.runner.clock import RunClock
 from llmserve.scheduler.base import Request, SystemState
@@ -61,6 +61,7 @@ def make_sender() -> tuple[Sender, dict[str, int]]:
 
 class RecordingFIFO(FIFOScheduler):
     def __init__(self) -> None:
+        super().__init__()
         self.calls: list[list[str]] = []
 
     def select_next(self, waiting: Sequence[Request], state: SystemState) -> Request | None:
@@ -72,6 +73,7 @@ class HoldingScheduler(FIFOScheduler):
     """Returns None (holds) for the first `holds` calls that see a waiting request."""
 
     def __init__(self, holds: int) -> None:
+        super().__init__()
         self._left = holds
         self.calls = 0
 
@@ -166,3 +168,28 @@ def test_records_carry_their_dispatch_context() -> None:
         assert in_flight_at_decision == [0, 1]
 
     asyncio.run(run())
+
+
+def test_the_estimator_sets_what_the_scheduler_and_the_record_see() -> None:
+    async def run(estimator: str) -> tuple[list[int | None], int | None]:
+        send, _state = make_sender()
+        seen: list[int | None] = []
+
+        class Seeing(FIFOScheduler):
+            def select_next(self, waiting: Sequence[Request], state: SystemState) -> Request | None:
+                seen.extend(r.output_tokens_est for r in waiting)
+                return super().select_next(waiting, state)
+
+        gateway = Gateway(
+            max_in_flight=1,
+            scheduler=Seeing(),
+            clock=RunClock(),
+            send=send,
+            estimate=ESTIMATORS[estimator],
+        )
+        async with gateway:
+            record = await gateway.submit(spec(0), 0)
+        return seen, record.output_tokens_est
+
+    assert asyncio.run(run("oracle")) == ([4], 4)  # spec(0) asks for 4 output tokens
+    assert asyncio.run(run("none")) == ([None], None)

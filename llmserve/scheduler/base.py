@@ -48,3 +48,30 @@ class Scheduler(ABC):
     @abstractmethod
     def select_next(self, waiting: Sequence[Request], state: SystemState) -> Request | None:
         """Pick the next request to admit from `waiting`, or None to hold admission."""
+
+
+class StaticKeyScheduler(Scheduler):
+    """Admits the waiting request with the smallest `key`, ties broken by arrival time and then
+    request id, so the choice never depends on the order of `waiting`.
+
+    The key must not change while a request waits, so it is computed once per request: at a
+    queue depth of 1,000 a cost-model key evaluated on every decision misses the 100 µs P99
+    budget (plan Phase 5 item 3)."""
+
+    def __init__(self) -> None:
+        self._keys: dict[str, tuple[float, float, str]] = {}
+
+    @abstractmethod
+    def key(self, r: Request) -> float:
+        """Smaller is admitted first."""
+
+    def select_next(self, waiting: Sequence[Request], state: SystemState) -> Request | None:
+        keys = self._keys
+
+        def ordered(r: Request) -> tuple[float, float, str]:
+            k = keys.get(r.request_id)
+            if k is None:
+                k = keys[r.request_id] = (self.key(r), r.arrival_time, r.request_id)
+            return k
+
+        return min(waiting, key=ordered, default=None)
