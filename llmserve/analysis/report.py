@@ -28,7 +28,7 @@ import pandas as pd
 from matplotlib.figure import Figure
 
 from llmserve.analysis import plots
-from llmserve.analysis.breakdown import PHASES, class_breakdown
+from llmserve.analysis.breakdown import PHASES, class_breakdown, dispatch_cohorts
 from llmserve.analysis.capacity import Capacity, capacity_points, find_capacity
 from llmserve.analysis.hypotheses import (
     H2_CLASS,
@@ -187,7 +187,7 @@ def build_report(results_root: Path, out_dir: Path, *, dev: bool = False) -> Pat
         *_breakdown_section(r, prefill_fit(verdicts[2])),
         *_profile_section(r, prefill_fit(verdicts[2])),
         *_capacity_section(r, prefill_fit(verdicts[2])),
-        *_concurrency_section(r, verdicts[0]),
+        *_concurrency_section(r, verdicts[0], prefill_fit(verdicts[2])),
         *_prompt_section(r, prompt, verdicts[2]),
         *_output_section(r),
         *_bursty_section(r),
@@ -492,7 +492,7 @@ def _capacity_evidence(workload: str, cap: Capacity) -> list[str]:
     return [*lines, ""]
 
 
-def _concurrency_section(r: _Report, verdict: Verdict) -> list[str]:
+def _concurrency_section(r: _Report, verdict: Verdict, prefill: PrefillFit | None) -> list[str]:
     lines = ["## Concurrency sweep (H1)", ""]
     for names, workload in ((CONCURRENCY, "128/128"), (CONCURRENCY_MIXED, "mixed")):
         s = r.suite(names)
@@ -522,6 +522,8 @@ def _concurrency_section(r: _Report, verdict: Verdict) -> list[str]:
             ),
             "",
         ]
+        if workload == "128/128":
+            lines += _cohort_section(r, s, prefill)
     e = verdict.evidence
     lines += [
         f"H1: **{verdict.status}**. {verdict.summary} "
@@ -529,6 +531,37 @@ def _concurrency_section(r: _Report, verdict: Verdict) -> list[str]:
         "",
     ]
     return lines
+
+
+def _cohort_section(r: _Report, suite: SuiteRuns, prefill: PrefillFit | None) -> list[str]:
+    """Why closed-loop TTFT far exceeds one prompt's prefill (plan Phase 4 item 3)."""
+    lines = ["#### Why TTFT exceeds one prompt's prefill", ""]
+    if prefill is None:
+        return [*lines, "Needs the H3 prefill fit: run the prompt-length suite.", ""]
+    lines += [
+        "Requests dispatched within 0.25 s of each other form a cohort. In a closed loop with "
+        "fixed lengths, the C requests finish together and are replaced together, so vLLM "
+        "prefills the cohort as one batch and each member's TTFT is the prefill of the whole "
+        "cohort. vLLM's step budget (`max_num_batched_tokens`) caps a batch, so larger C splits "
+        "into cohorts of at most budget ÷ prompt length.",
+        "",
+        "| C | Cohorts | Median size | Median cohort prompt tokens | Fit: one prompt (s) "
+        "| Fit: whole cohort (s) | Dispatch to first token, P50 (s) |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for point in suite.points:
+        cohorts = dispatch_cohorts(point.run)
+        if cohorts.empty:
+            continue
+        tokens = float(cohorts["prompt_tokens"].median())
+        one = float((cohorts["prompt_tokens"] / cohorts["size"]).median())
+        lines.append(
+            f"| {_num(point.value)} | {len(cohorts)} | {_num(float(cohorts['size'].median()))} "
+            f"| {tokens:.0f} | {prefill.predict(one):.2f} | {prefill.predict(tokens):.2f} "
+            f"| {float(cohorts['ttft_s'].median()):.2f} |"
+        )
+    r.cite("table: dispatch cohorts (128/128)", "Dispatch cohorts vs TTFT", [suite])
+    return [*lines, ""]
 
 
 def _prompt_section(r: _Report, suite: SuiteRuns | None, verdict: Verdict) -> list[str]:
