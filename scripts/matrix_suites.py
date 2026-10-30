@@ -62,13 +62,13 @@ def classes(weights: dict[str, float]) -> list[dict[str, Any]]:
     return [{"name": name, "weight": w, **CLASSES[name]} for name, w in weights.items()]
 
 
-# (suite, description of the workload, class weights, capacity in req/s or None, ρ values, seeds)
-MATRICES: list[tuple[str, str, dict[str, float], float | None, list[float], int]] = [
+# (suite, description of the workload, class weights, capacity in req/s, ρ values, seeds)
+MATRICES: list[tuple[str, str, dict[str, float], float, list[float], int]] = [
     (
         "matrix-mixed",
-        "E07's mixed workload (capacity 0.2 req/s, capacity-mixed)",
+        "E07's mixed workload (capacity 0.15 req/s, capacity-mixed-long)",
         {"interactive": 0.60, "long_context": 0.25, "generation_heavy": 0.15},
-        0.2,
+        0.15,
         [0.5, 0.8, 0.95],
         3,
     ),
@@ -82,10 +82,10 @@ MATRICES: list[tuple[str, str, dict[str, float], float | None, list[float], int]
     ),
     (
         "matrix-long-context-heavy",
-        "the mixed classes with long_context at half the arrivals (capacity from "
-        "capacity-long-context-heavy, passed with --set load.capacity_rps=<req/s>)",
+        "the mixed classes with long_context at half the arrivals "
+        "(capacity 0.1 req/s, capacity-long-context-heavy)",
         {"interactive": 0.35, "long_context": 0.50, "generation_heavy": 0.15},
-        None,
+        0.1,
         [0.8],
         2,
     ),
@@ -96,14 +96,17 @@ def suite(
     name: str,
     workload: str,
     weights: dict[str, float],
-    capacity: float | None,
+    capacity: float,
     rhos: list[float],
     seeds: int,
     max_in_flight: int,
 ) -> dict[str, Any]:
-    load: dict[str, Any] = {"mode": "open", "arrival": {"process": "poisson"}, "duration_s": 1200}
-    if capacity is not None:
-        load["capacity_rps"] = capacity
+    load: dict[str, Any] = {
+        "mode": "open",
+        "arrival": {"process": "poisson"},
+        "duration_s": 1200,
+        "capacity_rps": capacity,
+    }
     points = [
         {
             "label": f"{policy}-rho{round(rho * 100):03d}-s{k}",
