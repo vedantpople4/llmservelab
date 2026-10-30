@@ -209,7 +209,7 @@ class Server(_Model):
 
     @model_validator(mode="after")
     def _policy_needs_vllm(self) -> Self:
-        if self.scheduling_policy == "priority" and self.kind != "vllm":
+        if self.scheduling_policy == "priority" and self.kind not in ("vllm", "vllm-metal"):
             raise ValueError("scheduling_policy: priority is a vLLM feature")
         return self
 

@@ -346,3 +346,30 @@ def test_payload_for_a_backend_without_token_ids() -> None:
     assert "min_tokens" not in payload
     assert "ignore_eos" not in payload
     assert payload["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.parametrize("send_priority", [False, True])
+def test_priority_is_sent_only_for_a_priority_scheduling_server(send_priority: bool) -> None:
+    bodies: list[dict[str, Any]] = []
+    done = sse({"choices": [], "usage": {"prompt_tokens": 4, "completion_tokens": 0}})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, content=done)
+
+    async def run() -> None:
+        clock = RunClock()
+        async with transport(httpx.MockTransport(handler)) as c:
+            await stream_completion(
+                c,
+                spec(priority=2),
+                clock,
+                endpoint="http://x/v1",
+                model="m",
+                t_arrival=clock(),
+                caps=CAPS,
+                send_priority=send_priority,
+            )
+
+    asyncio.run(run())
+    assert bodies[0].get("priority") == (2 if send_priority else None)

@@ -101,6 +101,7 @@ async def _send(
         caps=caps,
         timeout_s=cfg.measurement.request_timeout_s,
         token_counter=token_counter,
+        send_priority=cfg.server.scheduling_policy == "priority",
     )
 
 

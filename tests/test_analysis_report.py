@@ -27,6 +27,7 @@ MISSING = (
     "output-length",
     "capacity-mixed",
     "capacity-interactive",
+    "capacity-long-context-heavy",
     "profile-p128",
     "profile-mixed",
 )
