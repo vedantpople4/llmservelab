@@ -1,0 +1,20 @@
+# Capacity check for the mixed workload: does 0.2 req/s hold over 1200 s on another seed?
+# The inflight-cap sweep saw completions of 0.13 to 0.15 req/s at 0.18 req/s offered, against
+# capacity-mixed's 600 s verdict of 0.2 req/s sustained.
+suite: capacity-mixed-long
+description: >-
+  E07's mixed workload with no gateway at Poisson 0.15 and 0.2 req/s for 1200 s (warm-up 120 s,
+  cool-down 60 s trimmed), seed 43. Twice capacity-mixed's duration, so a backlog that builds
+  over ten minutes shows up in the sustained test. One repetition per rate.
+base: ../baseline/e07.yaml
+set:
+  seed: 43
+  repetitions: 1
+  load: {mode: open, arrival: {process: poisson}, duration_s: 1200}
+  measurement.warmup_s: 120
+  measurement.cooldown_s: 60
+  measurement.request_timeout_s: 1800
+sweep:
+  field: load.arrival.rate
+  values: [0.15, 0.2]
+  label: "r{value:.2f}"

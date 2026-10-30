@@ -40,6 +40,7 @@ CONTRACT_SUITES = {
     "output-length",
     "capacity-p128",
     "capacity-mixed",
+    "capacity-mixed-long",
     "capacity-interactive",
     "bursty",
     "h2-mixed",

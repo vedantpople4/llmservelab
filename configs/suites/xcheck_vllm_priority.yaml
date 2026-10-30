@@ -13,7 +13,7 @@ set:
     arrival:
       process: poisson
     duration_s: 1200
-    capacity_rps: 0.2
+    capacity_rps: 0.15
   workload:
     classes:
     - name: interactive
