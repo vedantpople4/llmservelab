@@ -46,6 +46,12 @@ CONTRACT_SUITES = {
     "h2-interactive",
     "profile-p128",
     "profile-mixed",
+    "inflight-cap",
+    "capacity-long-context-heavy",
+    "matrix-mixed",
+    "matrix-interactive",
+    "matrix-long-context-heavy",
+    "xcheck-vllm-priority",
     "dev-concurrency",
     "dev-prompt-length",
 }

@@ -105,7 +105,7 @@ def test_open_loop_with_rho() -> None:
         ({"workload.classes": []}, "at least 1"),
         ({"server.kind": "tgi"}, "server.kind"),
         ({"server.api_key_env": "no-spaces-allowed"}, "server.api_key_env"),
-        ({"server.scheduling_policy": "priority"}, "vLLM feature"),
+        ({"server.scheduling_policy": "priority"}, "vLLM feature"),  # the mock has no policy
         ({"gateway": {"scheduler": {"name": "fifo2"}}}, "unknown scheduler"),
         (
             {"gateway": {"enabled": True, "scheduler": {"name": "sjf", "params": {"bach": 8}}}},

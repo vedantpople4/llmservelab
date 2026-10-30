@@ -1,0 +1,38 @@
+# Capacity search for the long-context-heavy workload (plan Phase 5 item 5); defines rho = 1 for
+# matrix-long-context-heavy.
+suite: capacity-long-context-heavy
+description: >-
+  Capacity search for the mixed classes with long_context at half the arrivals (interactive 0.35,
+  long_context 0.50, generation_heavy 0.15): Poisson arrivals at 0.04 to 0.2 req/s for 600 s
+  (warm-up 60 s, cool-down 30 s trimmed). Twice mixed's long-context share should put capacity
+  near half of mixed's 0.2 req/s. One repetition: this locates the knee, it is not a measurement.
+base: ../baseline/e07.yaml
+set:
+  repetitions: 1
+  load: {mode: open, arrival: {process: poisson}, duration_s: 600}
+  measurement.warmup_s: 60
+  measurement.cooldown_s: 30
+  workload:
+    classes:
+      - name: interactive  # the classes of configs/workloads/mixed.yaml, reweighted
+        weight: 0.35
+        priority: high
+        slo: {ttft_ms: 1500, tpot_ms: 200}
+        prompt: {distribution: uniform, min: 128, max: 512}
+        output: {distribution: fixed, tokens: 128}
+      - name: long_context
+        weight: 0.50
+        priority: medium
+        slo: {ttft_ms: 9000, tpot_ms: 200}
+        prompt: {distribution: choice, values: [2048, 4096, 8192], weights: [0.5, 0.3, 0.2]}
+        output: {distribution: fixed, tokens: 128}
+      - name: generation_heavy
+        weight: 0.15
+        priority: low
+        slo: {ttft_ms: 6000, tpot_ms: 300}
+        prompt: {distribution: fixed, tokens: 256}
+        output: {distribution: choice, values: [512, 1024]}
+sweep:
+  field: load.arrival.rate
+  values: [0.04, 0.06, 0.08, 0.1, 0.12, 0.15, 0.2]
+  label: "r{value:.2f}"

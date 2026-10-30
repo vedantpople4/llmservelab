@@ -73,8 +73,13 @@ async def stream_completion(
     timeout_s: float = 600.0,
     t_dispatch: int | None = None,
     token_counter: TokenCounter | None = None,
+    send_priority: bool = False,
 ) -> RequestRecord:
-    """Stream one completion and return its record. Never raises for a request-level failure."""
+    """Stream one completion and return its record. Never raises for a request-level failure.
+
+    `send_priority` adds the spec's class priority to the body, for a vLLM server started with
+    `--scheduling-policy priority`. vLLM rejects a nonzero priority under fcfs, so a config that
+    claims priority against an fcfs server fails its requests instead of measuring fcfs."""
     url = f"{endpoint.rstrip('/')}/completions"
     prompt: list[int] | str = (
         list(spec.prompt_ids) if caps.token_id_prompts else (spec.prompt_text or "")
@@ -87,6 +92,8 @@ async def stream_completion(
         "stream": True,
         "stream_options": {"include_usage": True},
     }
+    if send_priority:
+        payload["priority"] = int(spec.priority)
     if caps.forced_output_length:
         payload["ignore_eos"] = True
         if caps.min_tokens_param:

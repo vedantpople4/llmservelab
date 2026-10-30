@@ -56,6 +56,7 @@ CAPACITY = (
     ("p128", "capacity-p128"),
     ("mixed", "capacity-mixed"),
     ("interactive", "capacity-interactive"),
+    ("long-context-heavy", "capacity-long-context-heavy"),
 )
 BURSTY = ("bursty",)
 PROFILE_P128 = ("profile-p128",)
