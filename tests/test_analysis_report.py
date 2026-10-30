@@ -30,6 +30,9 @@ MISSING = (
     "capacity-long-context-heavy",
     "profile-p128",
     "profile-mixed",
+    "matrix-interactive",
+    "matrix-long-context-heavy",
+    "xcheck-vllm-priority",
 )
 
 
@@ -121,6 +124,27 @@ def results(tmp_path_factory: pytest.TempPathFactory) -> Path:
         measurement=window,
     )
     write_manifest(root, "capacity-p128", "load.arrival.rate", [("r020", 20, cap, "done")])
+    caps = []
+    for c in (2, 8):
+        gateway = {"enabled": True, "max_in_flight": c}
+        r = run(
+            f"inflight-cap-c{c:03d}", load=_open(poisson, 1.0), measurement=window, gateway=gateway
+        )
+        caps.append((f"c{c:03d}", float(c), r, "done"))
+    write_manifest(root, "inflight-cap", "gateway.max_in_flight", caps)
+    matrix = []
+    for policy in ("fifo", "spf"):
+        gateway = {"enabled": True, "max_in_flight": 2, "scheduler": {"name": policy}}
+        load = {**_open({"process": "poisson", "rho": 0.8}, 1.5), "capacity_rps": 40}
+        r = run(
+            f"matrix-mixed-{policy}-rho080-s0",
+            load=load,
+            measurement=window,
+            gateway=gateway,
+            workload=_classes("interactive", "long_context"),
+        )
+        matrix.append((f"{policy}-rho080-s0", None, r, "done"))
+    write_manifest(root, "matrix-mixed", None, matrix)
     return root
 
 
@@ -173,10 +197,13 @@ def test_dev_mode_banners_the_report_and_every_figure(
     assert figures == [
         "bursty_timeseries.png",
         "h2_ttft_cdf.png",
+        "inflight_cap.png",
         "latency_vs_concurrency_concurrency-p128.png",
         "prompt_length_ttft_prompt-length.png",
+        "slowdown_matrix-mixed.png",
         "throughput_vs_concurrency_concurrency-p128.png",
         "ttft_cdf_workloads.png",
+        "ttft_matrix-mixed.png",
     ]
     assert len(saved_titles) == len(figures)
     assert all(DEV_BANNER in t for t in saved_titles)
@@ -188,6 +215,15 @@ def test_dev_mode_banners_the_report_and_every_figure(
     assert "amended in October 2026" in md
     assert "growth on raw TTFT" not in md  # the prompt-length suite gave a prefill fit
     assert "None: development mode includes every run" in md
+    assert "Smallest cap with ≥ 95% of the largest cap's generated tok/s: **" in md
+    policies = md.split("## Scheduling baselines")[1].split("###", 2)[1]
+    assert [
+        line.split(" | ")[1] for line in policies.splitlines() if line.startswith("| 0.8 |")
+    ] == [
+        "fifo",
+        "spf",
+    ]
+    assert "| H4 |" in md
     cohorts = md.split("#### Why TTFT exceeds one prompt's prefill", 1)[1].split("\n#", 1)[0]
     assert [
         line.split(" | ")[0] for line in cohorts.splitlines() if line[:3] in ("| 1", "| 2", "| 4")

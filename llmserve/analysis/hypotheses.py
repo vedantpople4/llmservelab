@@ -27,6 +27,15 @@ P99 from fewer than 1,000 requests per condition is marked indicative (plan §5 
 ok, in-window requests of points run closed loop at C = 1 (other points are excluded: queueing
 would confound prefill). Fit `TTFT ≈ a + b·p + c·p²` (`estimators.fit_prefill`).
 - supported iff R² ≥ 0.95; refuted iff R² < 0.95; inconclusive with < 3 distinct lengths.
+
+**H4, shortest prompt first** (`matrix-mixed`, plan Phase 5). Per ρ ≥ 0.8, TTFT of the ok,
+in-window `interactive` requests of the SPF and FIFO points, each pooled across seeds. The
+percentile bootstrap CI (B = 10,000, seed 0) of `P95(SPF) − P95(FIFO)`.
+- supported iff the CI upper bound is < 0 at every ρ ≥ 0.8 with both policies;
+- refuted iff at every such ρ the CI lower bound is > −10% of FIFO's P95 (any reduction is
+  smaller than 10%, with 95% confidence);
+- inconclusive otherwise, or when a condition has fewer than 20 interactive requests;
+- not-run when no ρ ≥ 0.8 has both an SPF and a FIFO point.
 """
 
 from __future__ import annotations
@@ -38,8 +47,9 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
+from llmserve.analysis.policies import matrix_requests
 from llmserve.analysis.runs import Run
-from llmserve.analysis.stats import bootstrap_percentile_diff
+from llmserve.analysis.stats import DiffCI, bootstrap_percentile_diff
 from llmserve.analysis.suites import SuiteRuns, sweep_table
 from llmserve.scheduler.estimators import PrefillFit, fit_prefill
 
@@ -59,6 +69,11 @@ P99_MIN_SAMPLES = 1000
 
 H3_MIN_R2 = 0.95
 
+H4_CLASS = "interactive"
+H4_MIN_RHO = 0.8
+H4_QUANTILE = 95.0
+H4_EQUIVALENCE_MARGIN = 0.10
+
 STATEMENTS = {
     "H1": "Throughput saturates with concurrency, and tail TTFT degrades sharply only at or "
     "after that saturation point.",
@@ -66,6 +81,8 @@ STATEMENTS = {
     "requests in a homogeneous workload at equal load (head-of-line blocking).",
     "H3": "At concurrency 1, TTFT is a quadratic in prompt length: TTFT ≈ a + b·p + c·p², "
     "with R² ≥ 0.95.",
+    "H4": "In the mixed workload at ρ ≥ 0.8, shortest prompt first gives interactive requests "
+    "lower P95 TTFT than FIFO.",
 }
 
 
@@ -275,3 +292,80 @@ def prefill_fit(verdict: Verdict) -> PrefillFit | None:
     if "r2" not in e:
         return None
     return PrefillFit(a=e["a"], b=e["b"], c=e["c"], r2=e["r2"], n=e["n"])
+
+
+# --- H4 ---
+
+
+def h4(suite: SuiteRuns | None) -> Verdict:
+    if suite is None or not suite.points:
+        return _verdict("H4", "not-run", "matrix-mixed has no usable runs.")
+    requests = matrix_requests(suite)
+    samples: dict[float, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]] = {}
+    if not requests.empty:
+        keep = requests[(requests["workload_class"] == H4_CLASS) & (requests["rho"] >= H4_MIN_RHO)]
+        for rho, at_rho in keep.groupby("rho"):
+            by_policy = {
+                policy: group["ttft_s"].dropna().to_numpy(np.float64)
+                for policy, group in at_rho.groupby("policy")
+            }
+            if "spf" in by_policy and "fifo" in by_policy:
+                samples[float(rho)] = (by_policy["spf"], by_policy["fifo"])
+    verdict = judge_h4(samples)
+    verdict.evidence["suite"] = suite.suite
+    return verdict
+
+
+def judge_h4(
+    samples: dict[float, tuple[npt.ArrayLike, npt.ArrayLike]],
+) -> Verdict:
+    """`samples` maps ρ to (SPF interactive TTFT, FIFO interactive TTFT)."""
+    if not samples:
+        return _verdict("H4", "not-run", f"No ρ ≥ {H4_MIN_RHO:g} has both SPF and FIFO runs.")
+    evidence: dict[str, Any] = {"per_rho": {}}
+    cis: dict[float, DiffCI] = {}
+    for rho, (spf, fifo) in sorted(samples.items()):
+        a = np.asarray(spf, dtype=np.float64)
+        b = np.asarray(fifo, dtype=np.float64)
+        entry: dict[str, Any] = {"n_spf": len(a), "n_fifo": len(b)}
+        evidence["per_rho"][rho] = entry
+        if min(len(a), len(b)) < H2_MIN_SAMPLES:
+            continue
+        ci = bootstrap_percentile_diff(a, b, H4_QUANTILE)
+        cis[rho] = ci
+        entry.update(spf_s=ci.a, fifo_s=ci.b, diff_s=ci.diff, ci_lo_s=ci.lo, ci_hi_s=ci.hi)
+    short = [rho for rho in samples if rho not in cis]
+    if short:
+        return _verdict(
+            "H4",
+            "inconclusive",
+            f"Too few interactive requests at ρ {', '.join(f'{r:g}' for r in sorted(short))} "
+            f"(need {H2_MIN_SAMPLES} per policy).",
+            **evidence,
+        )
+    worst = max(cis, key=lambda rho: cis[rho].hi)
+    if all(ci.hi < 0 for ci in cis.values()):
+        ci = cis[worst]
+        return _verdict(
+            "H4",
+            "supported",
+            f"SPF lowers interactive P95 TTFT at every ρ ≥ {H4_MIN_RHO:g}; the smallest gain is "
+            f"{_pct(ci.diff, ci.b)} at ρ {worst:g} (95% CI {ci.lo:+.2f} to {ci.hi:+.2f} s).",
+            **evidence,
+        )
+    if all(ci.lo > -H4_EQUIVALENCE_MARGIN * ci.b for ci in cis.values()):
+        return _verdict(
+            "H4",
+            "refuted",
+            f"SPF lowers interactive P95 TTFT by less than 10% at every ρ ≥ {H4_MIN_RHO:g} "
+            "(95% CI lower bounds).",
+            **evidence,
+        )
+    return _verdict(
+        "H4",
+        "inconclusive",
+        f"SPF's P95 change at ρ {worst:g} is {_pct(cis[worst].diff, cis[worst].b)} "
+        f"(95% CI {cis[worst].lo:+.2f} to {cis[worst].hi:+.2f} s), not a clear gain or a "
+        "clear null.",
+        **evidence,
+    )

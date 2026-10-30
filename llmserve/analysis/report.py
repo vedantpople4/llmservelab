@@ -1,5 +1,5 @@
-"""The Baseline Performance Report (plan Phase 3 item 7): `baseline.md`, its figures and the
-fitted cost model, generated from suite manifests alone.
+"""The Baseline Performance Report (plan Phase 3 item 7) and the Phase 5 scheduler comparisons:
+`baseline.md`, its figures and the fitted cost model, generated from suite manifests alone.
 
 Rules:
 
@@ -36,9 +36,18 @@ from llmserve.analysis.hypotheses import (
     h1,
     h2,
     h3,
+    h4,
     interactive_ttft,
     prefill_fit,
     prefill_points,
+)
+from llmserve.analysis.policies import (
+    choose_cap,
+    class_ttft,
+    inflight_cap_table,
+    matrix_requests,
+    policy_summary,
+    slowdown_deciles,
 )
 from llmserve.analysis.profile import Profile, kv_at_dispatch, profile
 from llmserve.analysis.runs import Run, latest_run
@@ -63,6 +72,13 @@ PROFILE_P128 = ("profile-p128",)
 PROFILE_MIXED = ("profile-mixed",)
 H2_MIXED = ("h2-mixed",)
 H2_HOMOGENEOUS = ("h2-interactive",)
+INFLIGHT_CAP = ("inflight-cap",)
+MATRICES = (
+    ("mixed", "matrix-mixed"),
+    ("interactive", "matrix-interactive"),
+    ("long-context-heavy", "matrix-long-context-heavy"),
+)
+XCHECK = ("xcheck-vllm-priority",)
 DEV_SUITES = frozenset({"dev-concurrency", "dev-prompt-length"})
 BASELINE = tuple(f"e{n:02d}" for n in range(1, 8))
 EXIT_SUCCESS_RATE = 0.99
@@ -182,7 +198,9 @@ def build_report(results_root: Path, out_dir: Path, *, dev: bool = False) -> Pat
         h1(concurrency),
         h2(r.run(H2_MIXED), r.run(H2_HOMOGENEOUS)),
         h3(prompt),
+        h4(r.suite(("matrix-mixed",))),
     ]
+    model = _cost_model(prefill_fit(verdicts[2]), concurrency)
     body = [
         *_baseline_section(r),
         *_breakdown_section(r, prefill_fit(verdicts[2])),
@@ -193,7 +211,9 @@ def build_report(results_root: Path, out_dir: Path, *, dev: bool = False) -> Pat
         *_output_section(r),
         *_bursty_section(r),
         *_h2_section(r, verdicts[1]),
-        *_cost_model_section(r, concurrency, verdicts[2]),
+        *_cost_model_section(r, model),
+        *_inflight_cap_section(r),
+        *_scheduling_section(r, verdicts[3], model),
     ]
     lines = ["# Baseline performance report", ""]
     if dev:
@@ -683,14 +703,17 @@ def _h2_section(r: _Report, verdict: Verdict) -> list[str]:
     return [*lines, "", f"H2: **{verdict.status}**. {verdict.summary}", ""]
 
 
-def _cost_model_section(r: _Report, concurrency: SuiteRuns | None, h3v: Verdict) -> list[str]:
-    lines = ["## Cost model", ""]
-    prefill = prefill_fit(h3v)
+def _cost_model(prefill: PrefillFit | None, concurrency: SuiteRuns | None) -> CostModel | None:
     decode = _decode_fit(concurrency)
-    if prefill is None or decode is None:
-        missing = [n for n, f in (("prefill", prefill), ("decode", decode)) if f is None]
-        return [*lines, f"Not fitted: no {' or '.join(missing)} data.", ""]
-    CostModel(prefill=prefill, decode=decode).save(r.out_dir / "cost_model.json")
+    return None if prefill is None or decode is None else CostModel(prefill, decode)
+
+
+def _cost_model_section(r: _Report, model: CostModel | None) -> list[str]:
+    lines = ["## Cost model", ""]
+    if model is None:
+        return [*lines, "Not fitted: needs the H3 prefill fit and the concurrency sweep.", ""]
+    model.save(r.out_dir / "cost_model.json")
+    prefill, decode = model.prefill, model.decode
     return [
         *lines,
         f"Prefill: TTFT ≈ {_poly(prefill.a, prefill.b, prefill.c)} s (R² = {prefill.r2:.4f}).",
@@ -700,6 +723,148 @@ def _cost_model_section(r: _Report, concurrency: SuiteRuns | None, h3v: Verdict)
         "Written to `cost_model.json`.",
         "",
     ]
+
+
+def _inflight_cap_section(r: _Report) -> list[str]:
+    lines = ["## In-flight cap (Phase 5)", ""]
+    suite = r.suite(INFLIGHT_CAP)
+    if suite is None or not suite.points:
+        return [*lines, r.missing(INFLIGHT_CAP), ""]
+    table = inflight_cap_table(suite)
+    classes = sorted(c.removeprefix("ttft_p95_") for c in table if c.startswith("ttft_p95_"))
+    lines += [
+        "FIFO behind the gateway; the largest swept cap stands for uncapped. Wait is gateway "
+        "wait (dispatch − arrival) of the measured requests.",
+        "",
+        "| Cap | Reps | Gen tok/s | Wait P50 (s) | Wait max (s) | E2E P95 (s) | "
+        + " | ".join(f"TTFT P95 {c} (s)" for c in classes)
+        + " |",
+        "|---|---|---|---|---|---|" + "---|" * len(classes),
+    ]
+    for row in table.itertuples():
+        cells = [f"{getattr(row, f'ttft_p95_{c}'):.1f}" for c in classes]
+        lines.append(
+            f"| {row.cap} | {row.reps} | {row.gen_toks_s:.1f} | {row.wait_p50_s:.1f} "
+            f"| {row.wait_max_s:.1f} | {row.e2e_p95_s:.1f} | " + " | ".join(cells) + " |"
+        )
+    cap = choose_cap(table)
+    title = "Throughput and TTFT P95 vs in-flight cap (inflight-cap)"
+    lines += [
+        "",
+        r.save(plots.inflight_cap(table, title=r.title(title)), "inflight_cap", [suite], title),
+        "",
+        "Smallest cap with ≥ 95% of the largest cap's generated tok/s: "
+        + (f"**{cap}**." if cap is not None else "none (needs two caps)."),
+        "",
+    ]
+    return lines
+
+
+def _scheduling_section(r: _Report, verdict: Verdict, model: CostModel | None) -> list[str]:
+    lines = [
+        "## Scheduling baselines (H4)",
+        "",
+        "Each (ρ, policy) cell pools the measured requests of its seeds. Goodput uses the "
+        "workload's SLOs, which are still placeholders. Max wait is the longest gateway wait.",
+        "",
+    ]
+    for workload, name in MATRICES:
+        suite = r.suite((name,))
+        lines += [f"### {workload}", ""]
+        if suite is None or not suite.points:
+            lines += [r.missing((name,)), ""]
+            continue
+        requests = matrix_requests(suite)
+        ttft = class_ttft(requests)
+        lines += _policy_table(policy_summary(suite), ttft)
+        r.cite(f"table: policies ({workload})", f"Policy comparison, {workload}", [suite])
+        title = f"TTFT P95 per class and policy ({name})"
+        lines += [
+            r.save(
+                plots.policy_ttft_bars(ttft, title=r.title(title)), f"ttft_{name}", [suite], title
+            ),
+            "",
+        ]
+        if model is None:
+            lines += ["Slowdown needs the cost model (see Cost model).", ""]
+            continue
+        title = f"Slowdown by request-size decile ({name})"
+        figure = plots.slowdown_by_decile(slowdown_deciles(requests, model), title=r.title(title))
+        lines += [r.save(figure, f"slowdown_{name}", [suite], title), ""]
+    lines += _xcheck_section(r)
+    e = verdict.evidence.get("per_rho", {})
+    rows = [(rho, d) for rho, d in sorted(e.items()) if "diff_s" in d]
+    if rows:
+        lines += [
+            "| ρ | SPF P95 (s) | FIFO P95 (s) | Δ (s) | 95% CI of Δ (s) | Requests (SPF, FIFO) |",
+            "|---|---|---|---|---|---|",
+        ]
+        for rho, d in rows:
+            lines.append(
+                f"| {rho:g} | {d['spf_s']:.2f} | {d['fifo_s']:.2f} | {d['diff_s']:+.2f} "
+                f"| {d['ci_lo_s']:+.2f} to {d['ci_hi_s']:+.2f} | {d['n_spf']}, {d['n_fifo']} |"
+            )
+        lines.append("")
+    return [*lines, f"H4: **{verdict.status}**. {verdict.summary}", ""]
+
+
+def _policy_table(summary: pd.DataFrame, ttft: pd.DataFrame) -> list[str]:
+    classes = sorted(ttft["workload_class"].unique()) if not ttft.empty else []
+    lines = [
+        "| ρ | Policy | Runs | Gen tok/s | Goodput (req/s) | Max wait (s) | "
+        + " | ".join(f"{c} TTFT P50 / P95 / P99 (s)" for c in classes)
+        + " |",
+        "|---|---|---|---|---|---|" + "---|" * len(classes),
+    ]
+    by_cell = {(row.rho, row.policy, row.workload_class): row for row in ttft.itertuples()}
+    for row in summary.itertuples():
+        cells = []
+        for c in classes:
+            t = by_cell.get((row.rho, row.policy, c))
+            cells.append("—" if t is None else f"{t.p50:.1f} / {t.p95:.1f} / {t.p99:.1f}")
+        lines.append(
+            f"| {row.rho:g} | {row.policy} | {row.runs} | {_num(row.gen_toks_s, '.1f')} "
+            f"| {_num(row.goodput_s, '.3f')} | {_num(row.max_wait_s, '.1f')} | "
+            + " | ".join(cells)
+            + " |"
+        )
+    return [*lines, ""]
+
+
+def _xcheck_section(r: _Report) -> list[str]:
+    """Gateway Priority (matrix-mixed) against vLLM's native priority (xcheck-vllm-priority)
+    at the ρ values and seeds both ran."""
+    lines = ["### vLLM native priority (cross-check)", ""]
+    xcheck, mixed = r.suite(XCHECK), r.suite(("matrix-mixed",))
+    if xcheck is None or not xcheck.points:
+        return [*lines, r.missing(XCHECK), ""]
+    native = matrix_requests(xcheck)
+    gateway = matrix_requests(mixed) if mixed is not None else pd.DataFrame()
+    if not gateway.empty:
+        gateway = gateway[gateway["policy"] == "priority"]
+        pairs = set(zip(native["rho"], native["seed"], strict=True))
+        gateway = gateway[
+            [(a, b) in pairs for a, b in zip(gateway["rho"], gateway["seed"], strict=True)]
+        ]
+    ttft = class_ttft(pd.concat([gateway, native], ignore_index=True))
+    classes = sorted(ttft["workload_class"].unique())
+    lines += [
+        "| ρ | Policy | " + " | ".join(f"{c} TTFT P50 / P95 / P99 (s)" for c in classes) + " |",
+        "|---|---|" + "---|" * len(classes),
+    ]
+    by_cell = {(row.rho, row.policy, row.workload_class): row for row in ttft.itertuples()}
+    for rho, policy in dict.fromkeys(zip(ttft["rho"], ttft["policy"], strict=True)):
+        cells = []
+        for c in classes:
+            t = by_cell.get((rho, policy, c))
+            cells.append("—" if t is None else f"{t.p50:.1f} / {t.p95:.1f} / {t.p99:.1f}")
+        lines.append(f"| {rho:g} | {policy} | " + " | ".join(cells) + " |")
+    r.cite(
+        "table: vLLM priority cross-check",
+        "Gateway vs vLLM priority",
+        [xcheck, *([mixed] if mixed else [])],
+    )
+    return [*lines, ""]
 
 
 def _decode_fit(suite: SuiteRuns | None) -> DecodeFit | None:

@@ -314,3 +314,84 @@ def kv_vs_ttft(frame: pd.DataFrame, *, title: str) -> Figure:
         ax.legend(loc="upper left")
     fig.suptitle(title)
     return fig
+
+
+@_styled
+def inflight_cap(table: pd.DataFrame, *, title: str) -> Figure:
+    """Generated tok/s and P95 TTFT per class against the gateway's in-flight cap.
+    `table` is `policies.inflight_cap_table`."""
+    fig = _figure(ncols=2, width=11)
+    tput_ax, ttft_ax = fig.axes
+    tput_ax.plot(table["cap"], table["gen_toks_s"], marker="o", color=PALETTE[0])
+    tput_ax.set_ylabel("generated tokens/s")
+    tput_ax.set_ylim(bottom=0)
+    classes = sorted(c.removeprefix("ttft_p95_") for c in table if c.startswith("ttft_p95_"))
+    for i, cls in enumerate(classes):
+        ttft_ax.plot(
+            table["cap"],
+            table[f"ttft_p95_{cls}"],
+            marker="o",
+            color=PALETTE[i % len(PALETTE)],
+            label=cls,
+        )
+    ttft_ax.set_ylabel("TTFT P95 (s)")
+    ttft_ax.set_ylim(bottom=0)
+    if classes:
+        ttft_ax.legend(loc="upper right")
+    for ax in fig.axes:
+        _log2_x(ax, table["cap"])
+        ax.set_xlabel("gateway max_in_flight")
+    fig.suptitle(title)
+    return fig
+
+
+@_styled
+def policy_ttft_bars(table: pd.DataFrame, *, title: str) -> Figure:
+    """TTFT P95 per class, one bar per policy, one panel per ρ. `table` is
+    `policies.class_ttft`; its row order sets the policy order."""
+    rhos = sorted(table["rho"].unique())
+    fig = _figure(ncols=max(1, len(rhos)), width=4 + 3.5 * len(rhos))
+    policies = list(dict.fromkeys(table["policy"]))
+    classes = sorted(table["workload_class"].unique())
+    width = 0.8 / max(1, len(policies))
+    for ax, rho in zip(fig.axes, rhos, strict=False):
+        at = table[table["rho"] == rho]
+        for i, policy in enumerate(policies):
+            rows = at[at["policy"] == policy].set_index("workload_class")
+            heights = [rows["p95"].get(c, np.nan) for c in classes]
+            x = np.arange(len(classes)) + (i - (len(policies) - 1) / 2) * width
+            ax.bar(x, heights, width=width, color=PALETTE[i % len(PALETTE)], label=policy)
+        ax.set_xticks(np.arange(len(classes)), classes)
+        ax.set_title(f"ρ = {rho:g}")
+        ax.set_ylabel("TTFT P95 (s)")
+    handles, names = fig.axes[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, names, loc="outside lower center", ncols=len(policies))
+    fig.suptitle(title)
+    return fig
+
+
+@_styled
+def slowdown_by_decile(table: pd.DataFrame, *, title: str) -> Figure:
+    """Slowdown P95 (solid) and P50 (dotted) by request-size decile, one line per policy, one
+    panel per ρ, log y. `table` is `policies.slowdown_deciles`."""
+    rhos = sorted(table["rho"].unique())
+    fig = _figure(ncols=max(1, len(rhos)), width=4 + 3.5 * len(rhos))
+    policies = list(dict.fromkeys(table["policy"]))
+    for ax, rho in zip(fig.axes, rhos, strict=False):
+        at = table[table["rho"] == rho]
+        for i, policy in enumerate(policies):
+            rows = at[at["policy"] == policy].sort_values("decile")
+            color = PALETTE[i % len(PALETTE)]
+            ax.plot(rows["decile"], rows["p95"], marker="o", color=color, label=policy)
+            ax.plot(rows["decile"], rows["p50"], linestyle=":", color=color)
+        ax.set_yscale("log")
+        ax.set_xticks(range(1, 11))
+        ax.set_xlabel("size decile (unloaded service time, 1 = smallest)")
+        ax.set_ylabel("slowdown (E2E ÷ unloaded service time)")
+        ax.set_title(f"ρ = {rho:g}")
+    handles, names = fig.axes[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, names, loc="outside lower center", ncols=len(policies))
+    fig.suptitle(title)
+    return fig
