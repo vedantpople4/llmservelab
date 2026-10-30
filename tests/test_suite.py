@@ -46,6 +46,7 @@ CONTRACT_SUITES = {
     "h2-interactive",
     "profile-p128",
     "profile-mixed",
+    "inflight-cap",
     "dev-concurrency",
     "dev-prompt-length",
 }
