@@ -218,19 +218,25 @@ class SchedulerSpec(_Model):
     name: str = "fifo"
     params: dict[str, float | int | str | bool] = {}
 
-    @field_validator("name")
-    @classmethod
-    def _known(cls, v: str) -> str:
-        if v not in registry.SCHEDULERS:
-            raise ValueError(f"unknown scheduler {v!r} (known: {sorted(registry.SCHEDULERS)})")
-        return v
+    @model_validator(mode="after")
+    def _known(self) -> Self:
+        registry.check(self.name, self.params)
+        return self
 
 
 class Gateway(_Model):
     enabled: bool = False
     max_in_flight: PositiveInt = 16
     scheduler: SchedulerSpec = SchedulerSpec()
+    # The output length schedulers see: `oracle` is the true length, `none` is no estimate.
     output_estimator: Literal["oracle", "class_prior", "online", "none"] = "oracle"
+
+    @field_validator("output_estimator")
+    @classmethod
+    def _implemented(cls, v: str) -> str:
+        if v in ("class_prior", "online"):
+            raise ValueError(f"output_estimator {v!r} arrives with WAAS in Phase 6")
+        return v
 
 
 class Warmup(_Model):

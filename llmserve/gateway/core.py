@@ -30,11 +30,19 @@ DISPATCH_TICK_S = 0.005
 Sender = Callable[[RequestSpec, int], Awaitable[RequestRecord]]
 """`(spec, arrival_ns) -> record` — the driver's send path, direct or through the gateway."""
 
+Estimator = Callable[[RequestSpec], int | None]
+ESTIMATORS: dict[str, Estimator] = {
+    "oracle": lambda spec: spec.output_tokens,
+    "none": lambda spec: None,
+}
+"""`gateway.output_estimator` → the output length a scheduler sees as `output_tokens_est`."""
+
 
 @dataclass(frozen=True, kw_only=True)
 class _Entry:
     spec: RequestSpec
     arrival_ns: int
+    est: int | None
     future: asyncio.Future[RequestRecord]
 
 
@@ -46,8 +54,10 @@ class Gateway:
         scheduler: Scheduler,
         clock: Clock,
         send: Sender,
+        estimate: Estimator = ESTIMATORS["oracle"],
     ) -> None:
         self._max_in_flight = max_in_flight
+        self._estimate = estimate
         self._scheduler = scheduler
         self._clock = clock
         self._send = send
@@ -79,13 +89,15 @@ class Gateway:
             arrival_time=arrival_ns / 1e9,
             prompt_tokens=spec.prompt_tokens,
             max_output_tokens=spec.output_tokens,
-            output_tokens_est=spec.output_tokens_est,
+            output_tokens_est=self._estimate(spec),
             priority=spec.priority,
             workload_class=spec.workload_class,
             slo_ttft_ms=spec.slo_ttft_ms,
             slo_tpot_ms=spec.slo_tpot_ms,
         )
-        self._waiting[waiting_on] = _Entry(spec=spec, arrival_ns=arrival_ns, future=future)
+        self._waiting[waiting_on] = _Entry(
+            spec=spec, arrival_ns=arrival_ns, est=waiting_on.output_tokens_est, future=future
+        )
         self._wake.set()
         return await future
 
@@ -128,6 +140,7 @@ class Gateway:
                 dataclasses.replace(
                     record,
                     sched_name=self._scheduler.name,
+                    output_tokens_est=entry.est,
                     sched_decision_ns=decision_ns,
                     queue_depth_at_dispatch=state.queue_depth,
                     in_flight_at_dispatch=state.in_flight,
