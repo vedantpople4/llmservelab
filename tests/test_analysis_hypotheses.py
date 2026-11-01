@@ -16,9 +16,11 @@ from llmserve.analysis.hypotheses import (
     h1,
     h2,
     h3,
+    h4,
     judge_h1,
     judge_h2,
     judge_h3,
+    judge_h4,
     prefill_points,
 )
 from llmserve.analysis.suites import SuiteRuns, load_suite_runs
@@ -179,3 +181,36 @@ def test_h3_fits_c1_points_and_drops_queued_ones(run_factory: RunFactory, tmp_pa
     v = h3(suite)
     assert v.status == "supported", v.summary
     assert 5e-5 < v.evidence["b"] < 2e-4  # the mock's 1e-4 s per prompt token
+
+
+# --- H4 ---
+
+
+def test_h4_supported_only_when_spf_wins_at_every_high_rho() -> None:
+    rng = np.random.default_rng(0)
+    fifo = rng.normal(10.0, 1.0, 400)
+    spf = rng.normal(5.0, 0.5, 400)
+    v = judge_h4({0.8: (spf, fifo), 0.95: (spf, fifo)})
+    assert v.status == "supported"
+    assert all(d["ci_hi_s"] < 0 for d in v.evidence["per_rho"].values())
+    v = judge_h4({0.8: (spf, fifo), 0.95: (fifo, fifo)})
+    assert v.status != "supported"
+
+
+def test_h4_refuted_when_spf_gains_under_ten_percent_everywhere() -> None:
+    rng = np.random.default_rng(1)
+    v = judge_h4({0.8: (rng.normal(10, 0.3, 3000), rng.normal(10, 0.3, 3000))})
+    assert v.status == "refuted"
+
+
+def test_h4_inconclusive_when_wide_or_short() -> None:
+    rng = np.random.default_rng(3)
+    v = judge_h4({0.8: (rng.exponential(1.0, 40), rng.exponential(1.0, 40))})
+    assert v.status == "inconclusive"
+    v = judge_h4({0.8: (np.full(19, 1.0), np.full(100, 5.0))})
+    assert v.status == "inconclusive" and "Too few" in v.summary
+
+
+def test_h4_not_run_without_spf_and_fifo_at_high_rho(run_factory: RunFactory) -> None:
+    assert judge_h4({}).status == "not-run"
+    assert h4(None).status == "not-run"

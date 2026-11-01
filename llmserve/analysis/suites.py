@@ -38,6 +38,7 @@ class SuiteRuns:
     suite_file: str
     axis: str
     points: tuple[SuitePoint, ...]  # sorted by value, then label
+    pending: int = 0  # manifest points not yet run
 
     def keep(self, predicate: Callable[[Run], bool]) -> SuiteRuns:
         return replace(self, points=tuple(p for p in self.points if predicate(p.run)))
@@ -56,8 +57,11 @@ def load_suite_runs(root: Path, suite: str) -> SuiteRuns | None:
         return None
     manifest = json.loads(path.read_text())
     points = []
+    pending = 0
     for point in manifest["points"]:
         run_dir = root / point["run_dir"] if point.get("run_dir") else None
+        if point["status"] == "pending":
+            pending += 1
         if point["status"] not in USABLE_STATUSES or run_dir is None:
             continue
         if not (run_dir / "summary.json").is_file():
@@ -74,6 +78,7 @@ def load_suite_runs(root: Path, suite: str) -> SuiteRuns | None:
         suite_file=manifest.get("suite_file") or suite_file_for(suite),
         axis=manifest["axis"],
         points=tuple(sorted(points, key=lambda p: (p.value or 0.0, p.label))),
+        pending=pending,
     )
 
 
