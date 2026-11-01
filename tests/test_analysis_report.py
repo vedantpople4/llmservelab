@@ -126,7 +126,7 @@ def results(tmp_path_factory: pytest.TempPathFactory) -> Path:
     write_manifest(root, "capacity-p128", "load.arrival.rate", [("r020", 20, cap, "done")])
     caps = []
     for c in (2, 8):
-        gateway = {"enabled": True, "max_in_flight": c}
+        gateway: dict[str, Any] = {"enabled": True, "max_in_flight": c}
         r = run(
             f"inflight-cap-c{c:03d}", load=_open(poisson, 1.0), measurement=window, gateway=gateway
         )
@@ -185,6 +185,16 @@ def test_missing_suites_name_the_command_to_run(results: Path, tmp_path: Path) -
     for suite in MISSING:
         command = f"llmserve suite configs/suites/{suite.replace('-', '_')}.yaml"
         assert f"Not yet run. Run it with `{command}`" in md
+
+
+def test_a_suite_with_unfinished_points_says_resume(results: Path, tmp_path: Path) -> None:
+    write_manifest(results, "matrix-interactive", None, [("fifo-rho050-s0", None, None, "pending")])
+    md = build_report(results, tmp_path / "out", dev=True).read_text()
+    assert (
+        "`matrix-interactive` is unfinished (1 points pending). Resume it with "
+        "`llmserve suite configs/suites/matrix_interactive.yaml`." in md
+    )
+    assert "`matrix-interactive` has no reportable runs" not in md
 
 
 def test_dev_mode_banners_the_report_and_every_figure(

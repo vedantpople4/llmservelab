@@ -57,7 +57,7 @@ def cells(suite: SuiteRuns) -> list[Cell]:
     out = []
     for point in suite.points:
         cfg = point.run.config
-        rho = cfg.load.arrival.rho if cfg.load.mode == "open" else None
+        rho = getattr(cfg.load.arrival, "rho", None)
         if rho is None:
             continue
         out.append(Cell(policy_of(point.run), float(rho), cfg.seed, point.run))

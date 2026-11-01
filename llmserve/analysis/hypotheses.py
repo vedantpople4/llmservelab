@@ -40,6 +40,7 @@ percentile bootstrap CI (B = 10,000, seed 0) of `P95(SPF) − P95(FIFO)`.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -317,7 +318,7 @@ def h4(suite: SuiteRuns | None) -> Verdict:
 
 
 def judge_h4(
-    samples: dict[float, tuple[npt.ArrayLike, npt.ArrayLike]],
+    samples: Mapping[float, tuple[npt.ArrayLike, npt.ArrayLike]],
 ) -> Verdict:
     """`samples` maps ρ to (SPF interactive TTFT, FIFO interactive TTFT)."""
     if not samples:

@@ -140,7 +140,13 @@ class _Report:
         """Why `names` has nothing to show: not yet run, or no reportable points."""
         name = names[0]
         for candidate in names:
-            if candidate in self._suites and self._suites[candidate] is not None:
+            loaded = self._suites.get(candidate)
+            if loaded is not None and loaded.pending:
+                return (
+                    f"`{candidate}` is unfinished ({loaded.pending} points pending). "
+                    f"Resume it with `llmserve suite {loaded.suite_file}`."
+                )
+            if loaded is not None:
                 return f"`{candidate}` has no reportable runs (see Excluded runs)."
         return f"Not yet run. Run it with `llmserve suite {suite_file_for(name)}`."
 
