@@ -1,4 +1,4 @@
-"""Verdicts for the Phase 3 hypotheses (plan Appendix B), each by a rule fixed before any data.
+"""Verdicts for the hypotheses (plan Appendix B), each by a rule fixed before any data.
 
 A verdict is `supported`, `refuted`, `inconclusive` (the data exist but cannot decide), or
 `not-run` (an input suite or run is missing or has no usable points). Missing inputs never raise.
@@ -36,6 +36,17 @@ percentile bootstrap CI (B = 10,000, seed 0) of `P95(SPF) − P95(FIFO)`.
   smaller than 10%, with 95% confidence);
 - inconclusive otherwise, or when a condition has fewer than 20 interactive requests;
 - not-run when no ρ ≥ 0.8 has both an SPF and a FIFO point.
+
+**H5, WAAS** (`eval-mixed`, plan Phase 7; fixed in November 2026 before any WAAS run). Per
+ρ ≥ 0.85, TTFT of the ok, in-window `interactive` requests of the WAAS and FIFO points, each
+pooled across seeds, and the across-run mean generated tok/s of each. The seeds are held out:
+none was used to tune WAAS. The percentile bootstrap CI (B = 10,000, seed 0) of
+`P95(WAAS) − P95(FIFO)`.
+- refuted iff at any such ρ WAAS keeps < 95% of FIFO's mean generated tok/s;
+- supported iff otherwise the CI upper bound is < 0 at every such ρ;
+- refuted iff otherwise at every such ρ the CI lower bound is > −10% of FIFO's P95;
+- inconclusive otherwise, or when a condition has fewer than 20 interactive requests;
+- not-run when no ρ ≥ 0.85 has both a WAAS and a FIFO point.
 """
 
 from __future__ import annotations
@@ -48,7 +59,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from llmserve.analysis.policies import matrix_requests
+from llmserve.analysis.policies import cells, matrix_requests
 from llmserve.analysis.runs import Run
 from llmserve.analysis.stats import DiffCI, bootstrap_percentile_diff
 from llmserve.analysis.suites import SuiteRuns, sweep_table
@@ -75,6 +86,13 @@ H4_MIN_RHO = 0.8
 H4_QUANTILE = 95.0
 H4_EQUIVALENCE_MARGIN = 0.10
 
+H5_SUITE = "eval-mixed"
+H5_CLASS = "interactive"
+H5_MIN_RHO = 0.85
+H5_QUANTILE = 95.0
+H5_EQUIVALENCE_MARGIN = 0.10
+H5_MIN_THROUGHPUT_RATIO = 0.95
+
 STATEMENTS = {
     "H1": "Throughput saturates with concurrency, and tail TTFT degrades sharply only at or "
     "after that saturation point.",
@@ -84,6 +102,8 @@ STATEMENTS = {
     "with R² ≥ 0.95.",
     "H4": "In the mixed workload at ρ ≥ 0.8, shortest prompt first gives interactive requests "
     "lower P95 TTFT than FIFO.",
+    "H5": "In the mixed workload at ρ ≥ 0.85 on held-out seeds, WAAS gives interactive requests "
+    "lower P95 TTFT than FIFO while keeping at least 95% of FIFO's generated tok/s.",
 }
 
 
@@ -323,18 +343,7 @@ def judge_h4(
     """`samples` maps ρ to (SPF interactive TTFT, FIFO interactive TTFT)."""
     if not samples:
         return _verdict("H4", "not-run", f"No ρ ≥ {H4_MIN_RHO:g} has both SPF and FIFO runs.")
-    evidence: dict[str, Any] = {"per_rho": {}}
-    cis: dict[float, DiffCI] = {}
-    for rho, (spf, fifo) in sorted(samples.items()):
-        a = np.asarray(spf, dtype=np.float64)
-        b = np.asarray(fifo, dtype=np.float64)
-        entry: dict[str, Any] = {"n_spf": len(a), "n_fifo": len(b)}
-        evidence["per_rho"][rho] = entry
-        if min(len(a), len(b)) < H2_MIN_SAMPLES:
-            continue
-        ci = bootstrap_percentile_diff(a, b, H4_QUANTILE)
-        cis[rho] = ci
-        entry.update(spf_s=ci.a, fifo_s=ci.b, diff_s=ci.diff, ci_lo_s=ci.lo, ci_hi_s=ci.hi)
+    evidence, cis = _percentile_cis(samples, ("spf", "fifo"), H4_QUANTILE)
     short = [rho for rho in samples if rho not in cis]
     if short:
         return _verdict(
@@ -368,5 +377,134 @@ def judge_h4(
         f"SPF's P95 change at ρ {worst:g} is {_pct(cis[worst].diff, cis[worst].b)} "
         f"(95% CI {cis[worst].lo:+.2f} to {cis[worst].hi:+.2f} s), not a clear gain or a "
         "clear null.",
+        **evidence,
+    )
+
+
+def _percentile_cis(
+    samples: Mapping[float, tuple[npt.ArrayLike, npt.ArrayLike]],
+    names: tuple[str, str],
+    q: float,
+) -> tuple[dict[str, Any], dict[float, DiffCI]]:
+    """Per ρ, the bootstrap CI of `pct_q(a) − pct_q(b)`, skipping a ρ where either side has
+    fewer than `H2_MIN_SAMPLES` values. Evidence keys are `n_<name>`, `<name>_s`, `diff_s` and
+    `ci_lo_s`/`ci_hi_s`."""
+    evidence: dict[str, Any] = {"per_rho": {}}
+    cis: dict[float, DiffCI] = {}
+    for rho, (first, second) in sorted(samples.items()):
+        a = np.asarray(first, dtype=np.float64)
+        b = np.asarray(second, dtype=np.float64)
+        entry: dict[str, Any] = {f"n_{names[0]}": len(a), f"n_{names[1]}": len(b)}
+        evidence["per_rho"][rho] = entry
+        if min(len(a), len(b)) < H2_MIN_SAMPLES:
+            continue
+        ci = bootstrap_percentile_diff(a, b, q)
+        cis[rho] = ci
+        entry.update(
+            {f"{names[0]}_s": ci.a, f"{names[1]}_s": ci.b},
+            diff_s=ci.diff,
+            ci_lo_s=ci.lo,
+            ci_hi_s=ci.hi,
+        )
+    return evidence, cis
+
+
+# --- H5 ---
+
+
+@dataclass(frozen=True)
+class H5Cell:
+    """One ρ of the H5 comparison: interactive TTFT per request and generated tok/s per run."""
+
+    waas_ttft: npt.NDArray[np.float64]
+    fifo_ttft: npt.NDArray[np.float64]
+    waas_toks: tuple[float, ...]
+    fifo_toks: tuple[float, ...]
+
+    @property
+    def throughput_ratio(self) -> float:
+        return float(np.mean(self.waas_toks) / np.mean(self.fifo_toks))
+
+
+def h5(suite: SuiteRuns | None) -> Verdict:
+    if suite is None or not suite.points:
+        return _verdict("H5", "not-run", f"{H5_SUITE} has no usable runs.")
+    requests = matrix_requests(suite)
+    toks: dict[tuple[float, str], list[float]] = {}
+    for cell in cells(suite):
+        toks.setdefault((cell.rho, cell.policy), []).extend(
+            cell.run.rep_metric("throughput.gen_toks_s")
+        )
+    samples: dict[float, H5Cell] = {}
+    if not requests.empty:
+        keep = requests[(requests["workload_class"] == H5_CLASS) & (requests["rho"] >= H5_MIN_RHO)]
+        for rho, at_rho in keep.groupby("rho"):
+            ttft = {
+                policy: group["ttft_s"].dropna().to_numpy(np.float64)
+                for policy, group in at_rho.groupby("policy")
+            }
+            waas, fifo = toks.get((float(rho), "waas")), toks.get((float(rho), "fifo"))
+            if "waas" in ttft and "fifo" in ttft and waas and fifo:
+                samples[float(rho)] = H5Cell(ttft["waas"], ttft["fifo"], tuple(waas), tuple(fifo))
+    verdict = judge_h5(samples)
+    verdict.evidence["suite"] = suite.suite
+    return verdict
+
+
+def judge_h5(samples: Mapping[float, H5Cell]) -> Verdict:
+    if not samples:
+        return _verdict("H5", "not-run", f"No ρ ≥ {H5_MIN_RHO:g} has both WAAS and FIFO runs.")
+    evidence, cis = _percentile_cis(
+        {rho: (c.waas_ttft, c.fifo_ttft) for rho, c in samples.items()},
+        ("waas", "fifo"),
+        H5_QUANTILE,
+    )
+    for rho, cell in samples.items():
+        evidence["per_rho"][rho]["throughput_ratio"] = cell.throughput_ratio
+    costly = sorted(
+        rho for rho, c in samples.items() if c.throughput_ratio < H5_MIN_THROUGHPUT_RATIO
+    )
+    if costly:
+        rho = costly[0]
+        return _verdict(
+            "H5",
+            "refuted",
+            f"WAAS keeps {samples[rho].throughput_ratio:.0%} of FIFO's generated tok/s at ρ "
+            f"{rho:g}, below {H5_MIN_THROUGHPUT_RATIO:.0%}.",
+            **evidence,
+        )
+    short = [rho for rho in samples if rho not in cis]
+    if short:
+        return _verdict(
+            "H5",
+            "inconclusive",
+            f"Too few interactive requests at ρ {', '.join(f'{r:g}' for r in sorted(short))} "
+            f"(need {H2_MIN_SAMPLES} per policy).",
+            **evidence,
+        )
+    worst = max(cis, key=lambda rho: cis[rho].hi)
+    ci = cis[worst]
+    if all(c.hi < 0 for c in cis.values()):
+        return _verdict(
+            "H5",
+            "supported",
+            f"WAAS lowers interactive P95 TTFT at every ρ ≥ {H5_MIN_RHO:g}; the smallest gain is "
+            f"{_pct(ci.diff, ci.b)} at ρ {worst:g} (95% CI {ci.lo:+.2f} to {ci.hi:+.2f} s), "
+            "keeping at least 95% of FIFO's throughput.",
+            **evidence,
+        )
+    if all(c.lo > -H5_EQUIVALENCE_MARGIN * c.b for c in cis.values()):
+        return _verdict(
+            "H5",
+            "refuted",
+            f"WAAS lowers interactive P95 TTFT by less than 10% at every ρ ≥ {H5_MIN_RHO:g} "
+            "(95% CI lower bounds).",
+            **evidence,
+        )
+    return _verdict(
+        "H5",
+        "inconclusive",
+        f"WAAS's P95 change at ρ {worst:g} is {_pct(ci.diff, ci.b)} (95% CI {ci.lo:+.2f} to "
+        f"{ci.hi:+.2f} s), not a clear gain or a clear null.",
         **evidence,
     )
