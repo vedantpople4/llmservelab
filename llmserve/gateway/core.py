@@ -128,12 +128,20 @@ class Gateway:
             if choice is None:
                 return  # held: the 5 ms timer re-polls
             entry = self._waiting.pop(choice)
+            score, bypassed = self._scheduler.on_dispatch(choice)
             self._in_flight += 1
-            task = asyncio.create_task(self._admit(entry, state, decision_ns))
+            task = asyncio.create_task(self._admit(entry, state, decision_ns, score, bypassed))
             self._admits.add(task)
             task.add_done_callback(self._admits.discard)
 
-    async def _admit(self, entry: _Entry, state: SystemState, decision_ns: int) -> None:
+    async def _admit(
+        self,
+        entry: _Entry,
+        state: SystemState,
+        decision_ns: int,
+        score: float | None,
+        bypassed: int | None,
+    ) -> None:
         try:
             record = await self._send(entry.spec, entry.arrival_ns)
             entry.future.set_result(
@@ -141,7 +149,9 @@ class Gateway:
                     record,
                     sched_name=self._scheduler.name,
                     output_tokens_est=entry.est,
+                    sched_score=score,
                     sched_decision_ns=decision_ns,
+                    bypass_count=bypassed,
                     queue_depth_at_dispatch=state.queue_depth,
                     in_flight_at_dispatch=state.in_flight,
                 )
