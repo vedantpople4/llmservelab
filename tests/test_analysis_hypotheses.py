@@ -6,21 +6,26 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
+import pytest
 from conftest import RunFactory, experiment_config
 from test_analysis_suites import closed, write_manifest
 
 from llmserve.analysis.hypotheses import (
     H1_TAIL,
     H1_THROUGHPUT,
+    H5Cell,
     h1,
     h2,
     h3,
     h4,
+    h5,
     judge_h1,
     judge_h2,
     judge_h3,
     judge_h4,
+    judge_h5,
     prefill_points,
 )
 from llmserve.analysis.suites import SuiteRuns, load_suite_runs
@@ -214,3 +219,45 @@ def test_h4_inconclusive_when_wide_or_short() -> None:
 def test_h4_not_run_without_spf_and_fifo_at_high_rho(run_factory: RunFactory) -> None:
     assert judge_h4({}).status == "not-run"
     assert h4(None).status == "not-run"
+
+
+# --- H5 ---
+
+
+def cell(
+    waas: npt.NDArray[np.float64], fifo: npt.NDArray[np.float64], ratio: float = 1.0
+) -> H5Cell:
+    return H5Cell(waas, fifo, (30.0 * ratio,), (30.0,))
+
+
+def test_h5_supported_when_waas_wins_everywhere_at_full_throughput() -> None:
+    rng = np.random.default_rng(0)
+    fifo, waas = rng.normal(10.0, 1.0, 400), rng.normal(5.0, 0.5, 400)
+    v = judge_h5({0.85: cell(waas, fifo, 0.97), 0.95: cell(waas, fifo)})
+    assert v.status == "supported"
+    assert v.evidence["per_rho"][0.85]["throughput_ratio"] == pytest.approx(0.97)
+    assert judge_h5({0.85: cell(waas, fifo), 0.95: cell(fifo, fifo)}).status != "supported"
+
+
+def test_h5_refuted_by_a_throughput_cost_even_with_a_latency_gain() -> None:
+    rng = np.random.default_rng(1)
+    fifo, waas = rng.normal(10.0, 1.0, 400), rng.normal(5.0, 0.5, 400)
+    v = judge_h5({0.85: cell(waas, fifo), 0.95: cell(waas, fifo, 0.94)})
+    assert v.status == "refuted" and "ρ 0.95" in v.summary
+
+
+def test_h5_refuted_when_the_gain_is_under_ten_percent_everywhere() -> None:
+    rng = np.random.default_rng(2)
+    v = judge_h5({0.85: cell(rng.normal(10, 0.3, 3000), rng.normal(10, 0.3, 3000))})
+    assert v.status == "refuted" and "less than 10%" in v.summary
+
+
+def test_h5_inconclusive_when_wide_or_short_and_not_run_without_both() -> None:
+    rng = np.random.default_rng(3)
+    v = judge_h5({0.85: cell(rng.exponential(1.0, 40), rng.exponential(1.0, 40))})
+    assert v.status == "inconclusive"
+    v = judge_h5({0.95: cell(np.full(19, 1.0, np.float64), np.full(100, 5.0, np.float64))})
+    assert v.status == "inconclusive" and "Too few" in v.summary
+    assert judge_h5({}).status == "not-run"
+    assert h5(None).status == "not-run"
+    assert h5(SuiteRuns("eval-mixed", "f.yaml", "x", ())).status == "not-run"
