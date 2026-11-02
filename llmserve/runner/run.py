@@ -27,13 +27,15 @@ import asyncio
 import dataclasses
 import functools
 from collections.abc import Callable
+from pathlib import Path
 
 import httpx
 
 from llmserve.client.capabilities import Capabilities
 from llmserve.client.openai_stream import stream_completion
 from llmserve.config.schema import ExperimentConfig
-from llmserve.gateway.core import ESTIMATORS, Gateway, Sender
+from llmserve.gateway import estimators
+from llmserve.gateway.core import Gateway, Sender
 from llmserve.metrics.records import RequestRecord
 from llmserve.runner.clock import Clock
 from llmserve.scheduler import registry
@@ -59,7 +61,10 @@ async def drive(
             scheduler=registry.create(cfg.gateway.scheduler.name, cfg.gateway.scheduler.params),
             clock=clock,
             send=direct,
-            estimate=ESTIMATORS[cfg.gateway.output_estimator],
+            estimator=estimators.create(
+                cfg.gateway.output_estimator,
+                Path(cfg.gateway.output_prior) if cfg.gateway.output_prior else None,
+            ),
         )
         async with gateway:
             records = await _drive(cfg, workload, clock=clock, send=gateway.submit)

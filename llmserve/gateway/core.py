@@ -20,6 +20,7 @@ import dataclasses
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from llmserve.gateway.estimators import Oracle, OutputEstimator
 from llmserve.metrics.records import RequestRecord
 from llmserve.runner.clock import Clock
 from llmserve.scheduler.base import Request, Scheduler, SystemState
@@ -29,13 +30,6 @@ DISPATCH_TICK_S = 0.005
 
 Sender = Callable[[RequestSpec, int], Awaitable[RequestRecord]]
 """`(spec, arrival_ns) -> record` — the driver's send path, direct or through the gateway."""
-
-Estimator = Callable[[RequestSpec], int | None]
-ESTIMATORS: dict[str, Estimator] = {
-    "oracle": lambda spec: spec.output_tokens,
-    "none": lambda spec: None,
-}
-"""`gateway.output_estimator` → the output length a scheduler sees as `output_tokens_est`."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -54,10 +48,10 @@ class Gateway:
         scheduler: Scheduler,
         clock: Clock,
         send: Sender,
-        estimate: Estimator = ESTIMATORS["oracle"],
+        estimator: OutputEstimator | None = None,
     ) -> None:
         self._max_in_flight = max_in_flight
-        self._estimate = estimate
+        self._estimator = estimator or Oracle()
         self._scheduler = scheduler
         self._clock = clock
         self._send = send
@@ -89,7 +83,7 @@ class Gateway:
             arrival_time=arrival_ns / 1e9,
             prompt_tokens=spec.prompt_tokens,
             max_output_tokens=spec.output_tokens,
-            output_tokens_est=self._estimate(spec),
+            output_tokens_est=self._estimator.estimate(spec),
             priority=spec.priority,
             workload_class=spec.workload_class,
             slo_ttft_ms=spec.slo_ttft_ms,
@@ -136,6 +130,8 @@ class Gateway:
     async def _admit(self, entry: _Entry, state: SystemState, decision_ns: int) -> None:
         try:
             record = await self._send(entry.spec, entry.arrival_ns)
+            if record.ok:
+                self._estimator.observe(entry.spec, record)
             entry.future.set_result(
                 dataclasses.replace(
                     record,

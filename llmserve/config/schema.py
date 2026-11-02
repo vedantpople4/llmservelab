@@ -21,6 +21,7 @@ from pydantic import (
     model_validator,
 )
 
+from llmserve.gateway.estimators import EstimatorName
 from llmserve.scheduler import registry
 
 
@@ -228,15 +229,19 @@ class Gateway(_Model):
     enabled: bool = False
     max_in_flight: PositiveInt = 16
     scheduler: SchedulerSpec = SchedulerSpec()
-    # The output length schedulers see: `oracle` is the true length, `none` is no estimate.
-    output_estimator: Literal["oracle", "class_prior", "online", "none"] = "oracle"
+    # The output length schedulers see (llmserve/gateway/estimators.py).
+    output_estimator: EstimatorName = "oracle"
+    # Per-class output lengths from earlier runs (`output_prior.json` from `llmserve report`),
+    # relative to the working directory. class_prior needs it; online starts from it if set.
+    output_prior: str | None = None
 
-    @field_validator("output_estimator")
-    @classmethod
-    def _implemented(cls, v: str) -> str:
-        if v in ("class_prior", "online"):
-            raise ValueError(f"output_estimator {v!r} arrives with WAAS in Phase 6")
-        return v
+    @model_validator(mode="after")
+    def _prior_when_needed(self) -> Self:
+        if self.output_estimator == "class_prior" and self.output_prior is None:
+            raise ValueError("output_estimator class_prior needs output_prior")
+        if self.output_prior is not None and self.output_estimator in ("oracle", "none"):
+            raise ValueError(f"output_estimator {self.output_estimator} ignores output_prior")
+        return self
 
 
 class Warmup(_Model):
@@ -287,9 +292,12 @@ class ExperimentConfig(_Model):
     def canonical(self) -> dict[str, Any]:
         """JSON-compatible dump with every default filled in; the input to `config_hash`.
 
-        `measurement.rep_cooldown` appears only when set, so configs written before it existed
-        keep their hashes and suites keep skipping their finished points."""
+        `measurement.rep_cooldown` and `gateway.output_prior` appear only when set, so configs
+        written before they existed keep their hashes and suites keep skipping their finished
+        points."""
         dump = self.model_dump(mode="json")
         if not self.measurement.rep_cooldown:
             del dump["measurement"]["rep_cooldown"]
+        if self.gateway.output_prior is None:
+            del dump["gateway"]["output_prior"]
         return dump

@@ -154,6 +154,7 @@ def build_metadata(
             "scheduler": cfg.gateway.scheduler.name,
             "scheduler_params": cfg.gateway.scheduler.params,
             "output_estimator": cfg.gateway.output_estimator,
+            "output_prior": cfg.gateway.output_prior,
         },
         "measurement": {
             "warmup_requests": cfg.measurement.warmup.requests,

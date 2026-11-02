@@ -14,10 +14,13 @@ Rules:
 - **Cost model:** prefill from the H3 fit; decode from per-rep TPOT P50 vs C over the
   concurrency sweep (the output-length sweep runs at a single C, so it cannot fit a slope).
   `cost_model.json` is written only when both fits exist.
+- **Output-length prior:** per-class median output tokens of `matrix-mixed`, written as
+  `output_prior.json` for the `class_prior` and `online` estimators.
 """
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -46,6 +49,7 @@ from llmserve.analysis.policies import (
     class_ttft,
     inflight_cap_table,
     matrix_requests,
+    output_prior,
     policy_summary,
     prefill_interference,
     slowdown_deciles,
@@ -80,6 +84,7 @@ MATRICES = (
     ("long-context-heavy", "matrix-long-context-heavy"),
 )
 XCHECK = ("xcheck-vllm-priority",)
+PRIOR_SUITE = ("matrix-mixed",)
 DEV_SUITES = frozenset({"dev-concurrency", "dev-prompt-length"})
 BASELINE = tuple(f"e{n:02d}" for n in range(1, 8))
 EXIT_SUCCESS_RATE = 0.99
@@ -197,6 +202,7 @@ def build_report(results_root: Path, out_dir: Path, *, dev: bool = False) -> Pat
     for stale in sorted((out_dir / "figures").glob("*.png")):
         stale.unlink()
     (out_dir / "cost_model.json").unlink(missing_ok=True)
+    (out_dir / "output_prior.json").unlink(missing_ok=True)
 
     r = _Report(results_root, out_dir, dev)
     concurrency = r.suite(CONCURRENCY)
@@ -221,6 +227,7 @@ def build_report(results_root: Path, out_dir: Path, *, dev: bool = False) -> Pat
         *_cost_model_section(r, model),
         *_inflight_cap_section(r),
         *_scheduling_section(r, verdicts[3], model),
+        *_output_prior_section(r),
     ]
     lines = ["# Baseline performance report", ""]
     if dev:
