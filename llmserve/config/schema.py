@@ -204,6 +204,10 @@ class Server(_Model):
     expected_version: str | None = None
     prefix_caching: bool = False
     scheduling_policy: Literal["fcfs", "priority"] = "fcfs"
+    # vLLM's --long-prefill-token-threshold: the most prompt tokens one request may prefill per
+    # engine step when others are waiting or running. 0 is vLLM's default, no cap. Like
+    # `scheduling_policy`, it declares how the server was started; the harness cannot set it.
+    long_prefill_token_threshold: NonNegativeInt = 0
     api_key_env: Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")] | None = None
     """Environment variable holding the bearer token (NIM's `NVIDIA_API_KEY`); None = no auth."""
 
@@ -211,6 +215,8 @@ class Server(_Model):
     def _policy_needs_vllm(self) -> Self:
         if self.scheduling_policy == "priority" and self.kind not in ("vllm", "vllm-metal"):
             raise ValueError("scheduling_policy: priority is a vLLM feature")
+        if self.long_prefill_token_threshold and self.kind not in ("vllm", "vllm-metal"):
+            raise ValueError("long_prefill_token_threshold is a vLLM feature")
         return self
 
 
@@ -287,9 +293,12 @@ class ExperimentConfig(_Model):
     def canonical(self) -> dict[str, Any]:
         """JSON-compatible dump with every default filled in; the input to `config_hash`.
 
-        `measurement.rep_cooldown` appears only when set, so configs written before it existed
-        keep their hashes and suites keep skipping their finished points."""
+        `measurement.rep_cooldown` and `server.long_prefill_token_threshold` appear only when
+        set, so configs written before they existed keep their hashes and suites keep skipping
+        their finished points."""
         dump = self.model_dump(mode="json")
         if not self.measurement.rep_cooldown:
             del dump["measurement"]["rep_cooldown"]
+        if not self.server.long_prefill_token_threshold:
+            del dump["server"]["long_prefill_token_threshold"]
         return dump

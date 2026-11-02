@@ -129,6 +129,7 @@ def build_metadata(
             "expected_version": cfg.server.expected_version,
             "prefix_caching": cfg.server.prefix_caching,
             "scheduling_policy": cfg.server.scheduling_policy,
+            "long_prefill_token_threshold": cfg.server.long_prefill_token_threshold,
         },
         "backend_version": backend_version,
         "tokenizer_revision": None,

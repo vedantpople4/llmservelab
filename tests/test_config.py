@@ -106,6 +106,8 @@ def test_open_loop_with_rho() -> None:
         ({"server.kind": "tgi"}, "server.kind"),
         ({"server.api_key_env": "no-spaces-allowed"}, "server.api_key_env"),
         ({"server.scheduling_policy": "priority"}, "vLLM feature"),  # the mock has no policy
+        ({"server.long_prefill_token_threshold": 256}, "vLLM feature"),
+        ({"server.long_prefill_token_threshold": -1}, "greater than or equal"),
         ({"gateway": {"scheduler": {"name": "fifo2"}}}, "unknown scheduler"),
         (
             {"gateway": {"enabled": True, "scheduler": {"name": "sjf", "params": {"bach": 8}}}},
