@@ -15,3 +15,4 @@
 | [0011](0011-free-kaggle-t4-measurement-hardware.md) | Free Kaggle T4 is the measurement hardware |
 | [0012](0012-vllm-metal-for-scheduler-development.md) | vllm-metal on a Mac is the scheduler development platform |
 | [0013](0013-m5-macbook-measurement-platform.md) | The M5 MacBook with vllm-metal is the measurement platform |
+| [0014](0014-waas-design-from-phase-5.md) | WAAS v1 is an age-weighted cost order with a bypass bound |

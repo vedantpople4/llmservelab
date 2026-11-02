@@ -16,6 +16,9 @@ every policy is binned by the same edges.
 - **Slowdown** is E2E ÷ the cost model's unloaded service time for the request's prompt and
   requested output at decode batch 1.
 - **Max queue wait** is the longest gateway wait (dispatch − arrival) of any ok request.
+- **Prefill interference** buckets interactive requests by the long-context prompt tokens still
+  prefilling when they were dispatched. vLLM schedules a running prefill's next chunk before any
+  waiting prompt, so those tokens sit ahead of the new request whatever the gateway's order.
 """
 
 from __future__ import annotations
@@ -34,6 +37,8 @@ QUANTILES = (50, 95, 99)
 DECILES = 10
 VLLM_PRIORITY = "vllm-priority"
 POLICY_ORDER = ("fifo", "spf", "sjf", "priority", VLLM_PRIORITY)
+INTERFERENCE_EDGES = (-1, 0, 2048, 4096, 8192, float("inf"))
+INTERFERENCE_LABELS = ("none", "≤ 2k", "2k–4k", "4k–8k", "> 8k")
 
 
 @dataclass(frozen=True)
@@ -158,6 +163,51 @@ def slowdown_deciles(requests: pd.DataFrame, model: CostModel) -> pd.DataFrame:
                 }
             )
     return _sorted(pd.DataFrame(rows), "decile")
+
+
+def prefill_interference(
+    suite: SuiteRuns, victim: str = "interactive", blocker: str = "long_context"
+) -> pd.DataFrame:
+    """`interference` over every request of every cell of `suite`, warm-up included."""
+    frames = [cell.run.requests().assign(rho=cell.rho) for cell in cells(suite)]
+    frames = [f for f in frames if not f.empty]
+    if not frames:
+        return pd.DataFrame()
+    return interference(pd.concat(frames, ignore_index=True), victim, blocker)
+
+
+def interference(requests: pd.DataFrame, victim: str, blocker: str) -> pd.DataFrame:
+    """Per (ρ, bucket): how long measured `victim` requests wait inside the engine given the
+    `blocker` prefill already in flight when they were dispatched.
+
+    A blocker is in flight from its dispatch to its first token. Every ok blocker of the same
+    rep counts, warm-up included, since it occupies the engine either way. The bucket is the
+    summed prompt tokens of blockers in flight at the victim's dispatch, and server TTFT is
+    dispatch to first token."""
+    rows = []
+    for (rho, _, _), rep in requests[requests["ok"]].groupby(["rho", "run_id", "rep"]):
+        victims = rep[(rep["workload_class"] == victim) & rep["in_window"]]
+        blockers = rep[rep["workload_class"] == blocker]
+        if victims.empty:
+            continue
+        at = victims["t_dispatch"].to_numpy()[:, None]
+        inside = (blockers["t_dispatch"].to_numpy() <= at) & (
+            blockers["t_first_token"].to_numpy() > at
+        )
+        ahead = inside @ blockers["prompt_tokens_req"].to_numpy()
+        server = (victims["t_first_token"] - victims["t_dispatch"]).to_numpy() / 1e9
+        rows += [(rho, a, s) for a, s in zip(ahead, server, strict=True)]
+    if not rows:
+        return pd.DataFrame()
+    frame = pd.DataFrame(rows, columns=["rho", "tokens_ahead", "server_ttft_s"])
+    frame["bucket"] = pd.cut(frame["tokens_ahead"], INTERFERENCE_EDGES, labels=INTERFERENCE_LABELS)
+    out = (
+        frame.groupby(["rho", "bucket"], observed=True)["server_ttft_s"]
+        .agg(n="size", p50=lambda s: s.quantile(0.5), p95=lambda s: s.quantile(0.95))
+        .reset_index()
+    )
+    out["share"] = out["n"] / out.groupby("rho")["n"].transform("sum")
+    return out
 
 
 def _sorted(frame: pd.DataFrame, *extra: str) -> pd.DataFrame:

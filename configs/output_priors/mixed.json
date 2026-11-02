@@ -1,0 +1,5 @@
+{
+  "generation_heavy": 1024,
+  "interactive": 128,
+  "long_context": 128
+}

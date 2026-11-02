@@ -13,7 +13,8 @@ from collections.abc import Sequence
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from llmserve.gateway.core import ESTIMATORS, Gateway, Sender
+from llmserve.gateway import estimators
+from llmserve.gateway.core import Gateway, Sender
 from llmserve.metrics.records import RequestRecord, RequestStatus
 from llmserve.runner.clock import RunClock
 from llmserve.scheduler.base import Request, SystemState
@@ -42,6 +43,7 @@ def ok_record(spec: RequestSpec, t_arrival: int) -> RequestRecord:
         t_arrival=t_arrival,
         t_first_token=t_arrival + 1,
         t_last_token=t_arrival + 2,
+        output_tokens_usage=spec.output_tokens,
     )
 
 
@@ -171,7 +173,7 @@ def test_records_carry_their_dispatch_context() -> None:
 
 
 def test_the_estimator_sets_what_the_scheduler_and_the_record_see() -> None:
-    async def run(estimator: str) -> tuple[list[int | None], int | None]:
+    async def run(estimator: estimators.OutputEstimator) -> tuple[list[int | None], int | None]:
         send, _state = make_sender()
         seen: list[int | None] = []
 
@@ -185,11 +187,31 @@ def test_the_estimator_sets_what_the_scheduler_and_the_record_see() -> None:
             scheduler=Seeing(),
             clock=RunClock(),
             send=send,
-            estimate=ESTIMATORS[estimator],
+            estimator=estimator,
         )
         async with gateway:
             record = await gateway.submit(spec(0), 0)
         return seen, record.output_tokens_est
 
-    assert asyncio.run(run("oracle")) == ([4], 4)  # spec(0) asks for 4 output tokens
-    assert asyncio.run(run("none")) == ([None], None)
+    assert asyncio.run(run(estimators.Oracle())) == ([4], 4)  # spec(0) asks for 4 output tokens
+    assert asyncio.run(run(estimators.NoEstimate())) == ([None], None)
+
+
+def test_the_gateway_feeds_ok_completions_to_the_estimator() -> None:
+    async def run() -> list[int | None]:
+        send, _state = make_sender()
+        online = estimators.Online()
+        gateway = Gateway(
+            max_in_flight=1,
+            scheduler=FIFOScheduler(),
+            clock=RunClock(),
+            send=send,
+            estimator=online,
+        )
+        async with gateway:
+            first = await gateway.submit(spec(0), 0)
+            second = await gateway.submit(spec(1), 0)
+        return [first.output_tokens_est, second.output_tokens_est]
+
+    # Nothing completed before the first request enqueued; the second sees its usage.
+    assert asyncio.run(run()) == [None, 4]

@@ -18,6 +18,7 @@ from llmserve.scheduler.estimators import CostModel
 from llmserve.scheduler.fifo import FIFOScheduler
 from llmserve.scheduler.priority import PriorityScheduler
 from llmserve.scheduler.shortest import DEFAULT_COST_MODEL, ShortestJobFirst, ShortestPromptFirst
+from llmserve.scheduler.waas import WAAS
 
 STATE = SystemState(now=10.0, queue_depth=2, in_flight=0)
 MODEL = CostModel.load(Path(DEFAULT_COST_MODEL))
@@ -59,6 +60,8 @@ POLICIES: list[tuple[str, dict[str, float | str]]] = [
     ("sjf", {}),
     ("priority", {}),
     ("priority", {"aging_s": 5.0}),
+    ("waas", {}),
+    ("waas", {"cost_weight": 0.0, "max_bypass": 1}),
 ]
 
 
@@ -148,6 +151,7 @@ def test_registry_builds_every_policy_and_checks_params(tmp_path: Path) -> None:
         ShortestPromptFirst,
         ShortestJobFirst,
         PriorityScheduler,
+        WAAS,
     }
     with pytest.raises(ValueError, match="unknown scheduler"):
         registry.create("nope")
@@ -171,7 +175,7 @@ def test_sjf_loads_the_cost_model_it_is_given(tmp_path: Path) -> None:
     assert sjf.select_next(waiting, STATE) is waiting[1]
 
 
-@pytest.mark.parametrize("name", ["spf", "sjf", "priority"])
+@pytest.mark.parametrize("name", ["spf", "sjf", "priority", "waas"])
 def test_each_policy_runs_end_to_end_behind_the_gateway(run_factory: RunFactory, name: str) -> None:
     gateway = {"enabled": True, "max_in_flight": 2, "scheduler": {"name": name}}
     run = run_factory(experiment_config(repetitions=1, gateway=gateway))
@@ -180,3 +184,80 @@ def test_each_policy_runs_end_to_end_behind_the_gateway(run_factory: RunFactory,
     assert {r.sched_name for r in records} == {name}
     assert all(r.output_tokens_est == r.output_tokens_req for r in records)  # the oracle
     assert run.metadata["gateway"]["scheduler"] == name
+    if name == "waas":
+        assert all(r.sched_score is not None and r.bypass_count is not None for r in records)
+
+
+def _serve(scheduler: Scheduler, arrivals: list[list[Request]]) -> list[tuple[Request, int]]:
+    """Each step enqueues `arrivals[step]` and dispatches one request; then the queue drains.
+    Returns (request, bypass count reported at dispatch) in dispatch order."""
+    waiting: list[Request] = []
+    out = []
+    for step in range(len(arrivals) + sum(map(len, arrivals))):
+        if step < len(arrivals):
+            waiting += arrivals[step]
+        chosen = scheduler.select_next(waiting, STATE)
+        if chosen is None:
+            continue
+        waiting.remove(chosen)
+        _, bypassed = scheduler.on_dispatch(chosen)
+        assert bypassed is not None
+        out.append((chosen, bypassed))
+    assert not waiting
+    return out
+
+
+def _true_bypasses(order: list[Request], r: Request) -> int:
+    """Later arrivals dispatched before `r`. Everyone enqueued before `r` was dispatched, so a
+    later arrival dispatched earlier overtook it while it waited."""
+    before = order[: order.index(r)]
+    return sum((o.arrival_time, o.request_id) > (r.arrival_time, r.request_id) for o in before)
+
+
+@given(
+    batches=st.lists(st.lists(st.integers(1, 8192), max_size=4), min_size=1, max_size=30),
+    weight=st.sampled_from([0.0, 0.01, 1.0, 1e6]),
+    bound=st.integers(1, 6),
+)
+def test_waas_reports_true_bypasses_and_never_exceeds_the_bound(
+    batches: list[list[int]], weight: float, bound: int
+) -> None:
+    arrivals, n = [], 0
+    for step, prompts in enumerate(batches):
+        arrivals.append([req(f"r{(n := n + 1):03d}", float(step), p) for p in prompts])
+    served = _serve(WAAS(cost_weight=weight, max_bypass=bound), arrivals)
+    order = [r for r, _ in served]
+    assert sorted(r.request_id for r in order) == sorted(r.request_id for b in arrivals for r in b)
+    for r, bypassed in served:
+        assert bypassed == _true_bypasses(order, r)
+        assert bypassed <= bound
+
+
+def test_waas_with_zero_cost_weight_is_fifo() -> None:
+    waiting = [req("a", 2.0, prompt=10), req("b", 1.0, prompt=8000), req("c", 3.0, prompt=1)]
+    assert _order(WAAS(cost_weight=0.0), waiting) == _order(FIFOScheduler(), waiting)
+
+
+def test_waas_trades_predicted_service_against_age() -> None:
+    waas = WAAS(cost_weight=1.0)
+    long, short = req("long", 0.0, prompt=8000, est=128), req("short", 5.0, prompt=100, est=128)
+    gap = MODEL.service_time(8000, 128, 16) - MODEL.service_time(100, 128, 16)
+    assert gap > 5.0  # the short request is worth more than its 5 s younger age
+    assert waas.select_next([long, short], STATE) is short
+    late = req("short", gap + 1.0, prompt=100, est=128)
+    assert WAAS(cost_weight=1.0).select_next([long, late], STATE) is long
+
+
+def test_a_starving_request_goes_after_max_bypass_overtakes() -> None:
+    big = req("big", 0.0, prompt=8000)
+    tiny = [[req(f"t{i:03d}", float(i), prompt=1)] for i in range(50)]
+    served = _serve(WAAS(cost_weight=1e6, max_bypass=5), [[big, *tiny[0]], *tiny[1:]])
+    position = [r.request_id for r, _ in served].index("big")
+    assert position == 5 and served[position][1] == 5
+
+
+def test_waas_rejects_bad_params() -> None:
+    with pytest.raises(ValueError, match="cost_weight"):
+        WAAS(cost_weight=-1)
+    with pytest.raises(ValueError, match="max_bypass"):
+        WAAS(max_bypass=0)

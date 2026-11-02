@@ -14,10 +14,13 @@ Rules:
 - **Cost model:** prefill from the H3 fit; decode from per-rep TPOT P50 vs C over the
   concurrency sweep (the output-length sweep runs at a single C, so it cannot fit a slope).
   `cost_model.json` is written only when both fits exist.
+- **Output-length prior:** per-class median output tokens of `matrix-mixed`, written as
+  `output_prior.json` for the `class_prior` and `online` estimators.
 """
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -46,7 +49,9 @@ from llmserve.analysis.policies import (
     class_ttft,
     inflight_cap_table,
     matrix_requests,
+    output_prior,
     policy_summary,
+    prefill_interference,
     slowdown_deciles,
 )
 from llmserve.analysis.profile import Profile, kv_at_dispatch, profile
@@ -79,6 +84,7 @@ MATRICES = (
     ("long-context-heavy", "matrix-long-context-heavy"),
 )
 XCHECK = ("xcheck-vllm-priority",)
+PRIOR_SUITE = ("matrix-mixed",)
 DEV_SUITES = frozenset({"dev-concurrency", "dev-prompt-length"})
 BASELINE = tuple(f"e{n:02d}" for n in range(1, 8))
 EXIT_SUCCESS_RATE = 0.99
@@ -196,6 +202,7 @@ def build_report(results_root: Path, out_dir: Path, *, dev: bool = False) -> Pat
     for stale in sorted((out_dir / "figures").glob("*.png")):
         stale.unlink()
     (out_dir / "cost_model.json").unlink(missing_ok=True)
+    (out_dir / "output_prior.json").unlink(missing_ok=True)
 
     r = _Report(results_root, out_dir, dev)
     concurrency = r.suite(CONCURRENCY)
@@ -220,6 +227,7 @@ def build_report(results_root: Path, out_dir: Path, *, dev: bool = False) -> Pat
         *_cost_model_section(r, model),
         *_inflight_cap_section(r),
         *_scheduling_section(r, verdicts[3], model),
+        *_output_prior_section(r),
     ]
     lines = ["# Baseline performance report", ""]
     if dev:
@@ -784,6 +792,14 @@ def _scheduling_section(r: _Report, verdict: Verdict, model: CostModel | None) -
         ttft = class_ttft(requests)
         lines += _policy_table(policy_summary(suite), ttft)
         r.cite(f"table: policies ({workload})", f"Policy comparison, {workload}", [suite])
+        interference = prefill_interference(suite)
+        if not interference.empty:
+            lines += _interference_table(interference)
+            r.cite(
+                f"table: prefill interference ({workload})",
+                f"Prefill interference, {workload}",
+                [suite],
+            )
         title = f"TTFT P95 per class and policy ({name})"
         lines += [
             r.save(
@@ -833,6 +849,22 @@ def _policy_table(summary: pd.DataFrame, ttft: pd.DataFrame) -> list[str]:
             f"| {_num(row.goodput_s, '.3f')} | {_num(row.max_wait_s, '.1f')} | "
             + " | ".join(cells)
             + " |"
+        )
+    return [*lines, ""]
+
+
+def _interference_table(frame: pd.DataFrame) -> list[str]:
+    lines = [
+        "Interactive server TTFT (dispatch to first token, all policies pooled) by the "
+        "long-context prompt tokens still prefilling at dispatch:",
+        "",
+        "| ρ | Long-context tokens ahead | Requests | Share | Server TTFT P50 (s) | P95 (s) |",
+        "|---|---|---|---|---|---|",
+    ]
+    for row in frame.itertuples():
+        lines.append(
+            f"| {row.rho:g} | {row.bucket} | {row.n} | {row.share:.0%} "
+            f"| {row.p50:.1f} | {row.p95:.1f} |"
         )
     return [*lines, ""]
 
