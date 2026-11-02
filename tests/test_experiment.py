@@ -598,12 +598,10 @@ def test_rep_cooldown_stays_out_of_the_hash_unless_set() -> None:
 
 def test_long_prefill_threshold_stays_out_of_the_hash_unless_set() -> None:
     cfg = make_cfg()
-    assert "long_prefill_token_threshold" not in cfg.canonical()["server"]
-    server = cfg.server.model_copy(
-        update={"kind": "vllm-metal", "long_prefill_token_threshold": 256}
+    off = cfg.model_copy(update={"server": cfg.server.model_copy(update={"kind": "vllm-metal"})})
+    assert "long_prefill_token_threshold" not in off.canonical()["server"]
+    on = off.model_copy(
+        update={"server": off.server.model_copy(update={"long_prefill_token_threshold": 256})}
     )
-    on = cfg.model_copy(update={"server": server})
     assert on.canonical()["server"]["long_prefill_token_threshold"] == 256
-    assert config_hash(on) != config_hash(
-        cfg.model_copy(update={"server": cfg.server.model_copy(update={"kind": "vllm-metal"})})
-    )
+    assert config_hash(on) != config_hash(off)
