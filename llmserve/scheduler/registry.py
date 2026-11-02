@@ -7,10 +7,11 @@ from llmserve.scheduler.base import Scheduler
 from llmserve.scheduler.fifo import FIFOScheduler
 from llmserve.scheduler.priority import PriorityScheduler
 from llmserve.scheduler.shortest import ShortestJobFirst, ShortestPromptFirst
+from llmserve.scheduler.waas import WAAS
 
 SCHEDULERS: dict[str, type[Scheduler]] = {
     cls.name: cls
-    for cls in (FIFOScheduler, ShortestPromptFirst, ShortestJobFirst, PriorityScheduler)
+    for cls in (FIFOScheduler, ShortestPromptFirst, ShortestJobFirst, PriorityScheduler, WAAS)
 }
 
 

@@ -49,6 +49,11 @@ class Scheduler(ABC):
     def select_next(self, waiting: Sequence[Request], state: SystemState) -> Request | None:
         """Pick the next request to admit from `waiting`, or None to hold admission."""
 
+    def on_dispatch(self, r: Request) -> tuple[float | None, int | None]:
+        """Called once `r`, the last choice, leaves the queue; returns the score it was chosen
+        on and how many times it was bypassed, for its record (None where not tracked)."""
+        return None, None
+
 
 class StaticKeyScheduler(Scheduler):
     """Admits the waiting request with the smallest `key`, ties broken by arrival time and then
@@ -75,3 +80,7 @@ class StaticKeyScheduler(Scheduler):
             return k
 
         return min(waiting, key=ordered, default=None)
+
+    def on_dispatch(self, r: Request) -> tuple[float | None, int | None]:
+        k = self._keys.pop(r.request_id, None)
+        return (k[0] if k is not None else None), None
