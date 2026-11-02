@@ -53,6 +53,7 @@ CONTRACT_SUITES = {
     "matrix-interactive",
     "matrix-long-context-heavy",
     "xcheck-vllm-priority",
+    "prefill-threshold",
     "dev-concurrency",
     "dev-prompt-length",
 }

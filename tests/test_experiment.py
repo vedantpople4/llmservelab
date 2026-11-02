@@ -596,12 +596,12 @@ def test_rep_cooldown_stays_out_of_the_hash_unless_set() -> None:
     assert config_hash(on) != config_hash(cfg)
 
 
-def test_output_prior_stays_out_of_the_hash_unless_set() -> None:
+def test_long_prefill_threshold_stays_out_of_the_hash_unless_set() -> None:
     cfg = make_cfg()
-    assert "output_prior" not in cfg.canonical()["gateway"]
-    gateway = cfg.gateway.model_copy(
-        update={"output_estimator": "online", "output_prior": "prior.json"}
+    off = cfg.model_copy(update={"server": cfg.server.model_copy(update={"kind": "vllm-metal"})})
+    assert "long_prefill_token_threshold" not in off.canonical()["server"]
+    on = off.model_copy(
+        update={"server": off.server.model_copy(update={"long_prefill_token_threshold": 256})}
     )
-    on = cfg.model_copy(update={"gateway": gateway})
-    assert on.canonical()["gateway"]["output_prior"] == "prior.json"
-    assert config_hash(on) != config_hash(cfg)
+    assert on.canonical()["server"]["long_prefill_token_threshold"] == 256
+    assert config_hash(on) != config_hash(off)
