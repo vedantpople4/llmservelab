@@ -34,6 +34,7 @@ MISSING = (
     "matrix-interactive",
     "matrix-long-context-heavy",
     "xcheck-vllm-priority",
+    "prefill-threshold",
 )
 
 

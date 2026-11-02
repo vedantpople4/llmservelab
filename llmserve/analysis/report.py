@@ -45,6 +45,8 @@ from llmserve.analysis.hypotheses import (
     prefill_points,
 )
 from llmserve.analysis.policies import (
+    THRESHOLD_TAG,
+    against_baseline,
     choose_cap,
     class_ttft,
     inflight_cap_table,
@@ -84,6 +86,7 @@ MATRICES = (
     ("long-context-heavy", "matrix-long-context-heavy"),
 )
 XCHECK = ("xcheck-vllm-priority",)
+THRESHOLD = ("prefill-threshold",)
 PRIOR_SUITE = ("matrix-mixed",)
 DEV_SUITES = frozenset({"dev-concurrency", "dev-prompt-length"})
 BASELINE = tuple(f"e{n:02d}" for n in range(1, 8))
@@ -227,6 +230,7 @@ def build_report(results_root: Path, out_dir: Path, *, dev: bool = False) -> Pat
         *_cost_model_section(r, model),
         *_inflight_cap_section(r),
         *_scheduling_section(r, verdicts[3], model),
+        *_threshold_section(r),
         *_output_prior_section(r),
     ]
     lines = ["# Baseline performance report", ""]
@@ -851,6 +855,62 @@ def _policy_table(summary: pd.DataFrame, ttft: pd.DataFrame) -> list[str]:
             + " |"
         )
     return [*lines, ""]
+
+
+def _threshold_section(r: _Report) -> list[str]:
+    """FIFO on the mixed workload against vLLM's long-prefill token threshold (ADR-0014)."""
+    lines = [
+        "## Long-prefill threshold (ADR-0014)",
+        "",
+        "FIFO behind the gateway on the mixed workload, against a vLLM started with "
+        "`--long-prefill-token-threshold` T. `fifo@lptT` is threshold T; plain `fifo` is unset.",
+        "",
+    ]
+    suite = r.suite(THRESHOLD)
+    if suite is None or not suite.points:
+        return [*lines, r.missing(THRESHOLD), ""]
+    requests = matrix_requests(suite)
+    ttft = class_ttft(requests)
+    lines += _policy_table(policy_summary(suite), ttft)
+    r.cite("table: long-prefill threshold", "Long-prefill threshold", [suite])
+    diffs = against_baseline(requests, "fifo")
+    if not diffs.empty:
+        lines += [
+            "TTFT P95 against the unset threshold at the same ρ, with 95% bootstrap CIs:",
+            "",
+            "| ρ | Threshold | Class | P95 (s) | Unset P95 (s) | Δ (s) | 95% CI of Δ (s) |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for row in diffs.itertuples():
+            lines.append(
+                f"| {row.rho:g} | {_threshold(row.policy)} | {row.workload_class} "
+                f"| {row.value:.1f} | {row.base:.1f} | {row.diff:+.1f} "
+                f"| {row.lo:+.1f} to {row.hi:+.1f} |"
+            )
+        lines.append("")
+    interference = prefill_interference(suite, by=("rho", "policy"))
+    if not interference.empty:
+        lines += [
+            "Interactive server TTFT by the long-context prompt tokens still prefilling at "
+            "dispatch:",
+            "",
+            "| ρ | Threshold | Tokens ahead | Requests | Share | Server TTFT P50 (s) | P95 (s) |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for row in interference.itertuples():
+            lines.append(
+                f"| {row.rho:g} | {_threshold(row.policy)} | {row.bucket} | {row.n} "
+                f"| {row.share:.0%} | {row.p50:.1f} | {row.p95:.1f} |"
+            )
+        lines.append("")
+    title = "TTFT P95 per class and long-prefill threshold (prefill-threshold)"
+    figure = plots.policy_ttft_bars(ttft, title=r.title(title))
+    return [*lines, r.save(figure, "ttft_prefill-threshold", [suite], title), ""]
+
+
+def _threshold(policy: str) -> str:
+    _, _, threshold = policy.partition(THRESHOLD_TAG)
+    return threshold or "unset"
 
 
 def _interference_table(frame: pd.DataFrame) -> list[str]:

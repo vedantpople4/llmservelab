@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 from llmserve.analysis.runs import Run
+from llmserve.analysis.stats import bootstrap_percentile_diff
 from llmserve.analysis.suites import SuiteRuns
 from llmserve.scheduler.estimators import CostModel
 
@@ -36,7 +37,9 @@ CAP_THROUGHPUT_SHARE = 0.95
 QUANTILES = (50, 95, 99)
 DECILES = 10
 VLLM_PRIORITY = "vllm-priority"
-POLICY_ORDER = ("fifo", "spf", "sjf", "priority", VLLM_PRIORITY)
+POLICY_ORDER = ("fifo", "spf", "sjf", "priority", "waas", VLLM_PRIORITY)
+THRESHOLD_TAG = "@lpt"
+MIN_COMPARE = 20  # as H2 and H4 require per condition
 INTERFERENCE_EDGES = (-1, 0, 2048, 4096, 8192, float("inf"))
 INTERFERENCE_LABELS = ("none", "≤ 2k", "2k–4k", "4k–8k", "> 8k")
 
@@ -52,10 +55,15 @@ class Cell:
 
 
 def policy_of(run: Run) -> str:
+    """The gateway scheduler, or `vllm-priority`/`none` without a gateway, suffixed with
+    `@lpt<T>` when vLLM ran with a long-prefill token threshold T."""
     cfg = run.config
     if cfg.gateway.enabled:
-        return cfg.gateway.scheduler.name
-    return VLLM_PRIORITY if cfg.server.scheduling_policy == "priority" else "none"
+        name = cfg.gateway.scheduler.name
+    else:
+        name = VLLM_PRIORITY if cfg.server.scheduling_policy == "priority" else "none"
+    threshold = cfg.server.long_prefill_token_threshold
+    return f"{name}{THRESHOLD_TAG}{threshold}" if threshold else name
 
 
 def cells(suite: SuiteRuns) -> list[Cell]:
@@ -69,10 +77,11 @@ def cells(suite: SuiteRuns) -> list[Cell]:
     return sorted(out, key=lambda c: (c.rho, _policy_rank(c.policy), c.seed))
 
 
-def _policy_rank(policy: str) -> tuple[int, str]:
-    return (
-        (POLICY_ORDER.index(policy), "") if policy in POLICY_ORDER else (len(POLICY_ORDER), policy)
-    )
+def _policy_rank(policy: str) -> tuple[int, str, int]:
+    base, _, threshold = policy.partition(THRESHOLD_TAG)
+    known = base in POLICY_ORDER
+    rank = POLICY_ORDER.index(base) if known else len(POLICY_ORDER)
+    return rank, "" if known else base, int(threshold or 0)
 
 
 def measured(run: Run) -> pd.DataFrame:
@@ -166,26 +175,32 @@ def slowdown_deciles(requests: pd.DataFrame, model: CostModel) -> pd.DataFrame:
 
 
 def prefill_interference(
-    suite: SuiteRuns, victim: str = "interactive", blocker: str = "long_context"
+    suite: SuiteRuns,
+    victim: str = "interactive",
+    blocker: str = "long_context",
+    by: tuple[str, ...] = ("rho",),
 ) -> pd.DataFrame:
     """`interference` over every request of every cell of `suite`, warm-up included."""
-    frames = [cell.run.requests().assign(rho=cell.rho) for cell in cells(suite)]
+    frames = [cell.run.requests().assign(rho=cell.rho, policy=cell.policy) for cell in cells(suite)]
     frames = [f for f in frames if not f.empty]
     if not frames:
         return pd.DataFrame()
-    return interference(pd.concat(frames, ignore_index=True), victim, blocker)
+    return interference(pd.concat(frames, ignore_index=True), victim, blocker, by)
 
 
-def interference(requests: pd.DataFrame, victim: str, blocker: str) -> pd.DataFrame:
-    """Per (ρ, bucket): how long measured `victim` requests wait inside the engine given the
-    `blocker` prefill already in flight when they were dispatched.
+def interference(
+    requests: pd.DataFrame, victim: str, blocker: str, by: tuple[str, ...] = ("rho",)
+) -> pd.DataFrame:
+    """Per (`by` columns, bucket): how long measured `victim` requests wait inside the engine
+    given the `blocker` prefill already in flight when they were dispatched. `by` defaults to
+    ρ alone and may add `policy`.
 
     A blocker is in flight from its dispatch to its first token. Every ok blocker of the same
     rep counts, warm-up included, since it occupies the engine either way. The bucket is the
     summed prompt tokens of blockers in flight at the victim's dispatch, and server TTFT is
     dispatch to first token."""
     rows = []
-    for (rho, _, _), rep in requests[requests["ok"]].groupby(["rho", "run_id", "rep"]):
+    for keys, rep in requests[requests["ok"]].groupby([*by, "run_id", "rep"]):
         victims = rep[(rep["workload_class"] == victim) & rep["in_window"]]
         blockers = rep[rep["workload_class"] == blocker]
         if victims.empty:
@@ -196,18 +211,51 @@ def interference(requests: pd.DataFrame, victim: str, blocker: str) -> pd.DataFr
         )
         ahead = inside @ blockers["prompt_tokens_req"].to_numpy()
         server = (victims["t_first_token"] - victims["t_dispatch"]).to_numpy() / 1e9
-        rows += [(rho, a, s) for a, s in zip(ahead, server, strict=True)]
+        rows += [(*keys[: len(by)], a, s) for a, s in zip(ahead, server, strict=True)]
     if not rows:
         return pd.DataFrame()
-    frame = pd.DataFrame(rows, columns=["rho", "tokens_ahead", "server_ttft_s"])
+    frame = pd.DataFrame(rows, columns=[*by, "tokens_ahead", "server_ttft_s"])
     frame["bucket"] = pd.cut(frame["tokens_ahead"], INTERFERENCE_EDGES, labels=INTERFERENCE_LABELS)
     out = (
-        frame.groupby(["rho", "bucket"], observed=True)["server_ttft_s"]
+        frame.groupby([*by, "bucket"], observed=True)["server_ttft_s"]
         .agg(n="size", p50=lambda s: s.quantile(0.5), p95=lambda s: s.quantile(0.95))
         .reset_index()
     )
-    out["share"] = out["n"] / out.groupby("rho")["n"].transform("sum")
-    return out
+    out["share"] = out["n"] / out.groupby(list(by))["n"].transform("sum")
+    return _sorted(out, "bucket") if "policy" in by else out
+
+
+def against_baseline(
+    requests: pd.DataFrame, baseline: str, q: float = 95.0, metric: str = "ttft_s"
+) -> pd.DataFrame:
+    """Per (ρ, policy other than `baseline`, class): `pct_q(policy) − pct_q(baseline)` of
+    `metric` over measured requests, with its percentile bootstrap CI (`stats`, B = 10,000,
+    seed 0). Cells with fewer than `MIN_COMPARE` requests on either side are left out."""
+    rows = []
+    for (rho, cls), at in requests.groupby(["rho", "workload_class"]):
+        base = at.loc[at["policy"] == baseline, metric].dropna().to_numpy()
+        if len(base) < MIN_COMPARE:
+            continue
+        for policy, group in at[at["policy"] != baseline].groupby("policy"):
+            other = group[metric].dropna().to_numpy()
+            if len(other) < MIN_COMPARE:
+                continue
+            ci = bootstrap_percentile_diff(other, base, q)
+            rows.append(
+                {
+                    "rho": rho,
+                    "policy": policy,
+                    "workload_class": cls,
+                    "n": ci.n_a,
+                    "n_base": ci.n_b,
+                    "value": ci.a,
+                    "base": ci.b,
+                    "diff": ci.diff,
+                    "lo": ci.lo,
+                    "hi": ci.hi,
+                }
+            )
+    return _sorted(pd.DataFrame(rows))
 
 
 def output_prior(suite: SuiteRuns) -> dict[str, int]:
