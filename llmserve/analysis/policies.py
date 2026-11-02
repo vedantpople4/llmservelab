@@ -210,6 +210,18 @@ def interference(requests: pd.DataFrame, victim: str, blocker: str) -> pd.DataFr
     return out
 
 
+def output_prior(suite: SuiteRuns) -> dict[str, int]:
+    """Per class, the median `usage` output tokens of every ok request of every cell: the
+    history the `class_prior` estimator reads (ADR-0014)."""
+    frames = [cell.run.requests() for cell in cells(suite)]
+    frame = pd.concat([f for f in frames if not f.empty], ignore_index=True) if frames else None
+    if frame is None or frame.empty:
+        return {}
+    ok = frame[frame["ok"]]
+    medians = ok.groupby("workload_class")["output_tokens_usage"].median()
+    return {str(cls): int(round(v)) for cls, v in sorted(medians.items())}
+
+
 def _sorted(frame: pd.DataFrame, *extra: str) -> pd.DataFrame:
     if frame.empty:
         return frame

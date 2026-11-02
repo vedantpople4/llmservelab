@@ -869,6 +869,28 @@ def _interference_table(frame: pd.DataFrame) -> list[str]:
     return [*lines, ""]
 
 
+def _output_prior_section(r: _Report) -> list[str]:
+    lines = ["## Output-length prior", ""]
+    suite = r.suite(PRIOR_SUITE)
+    prior = output_prior(suite) if suite is not None else {}
+    if suite is None or not prior:
+        return [*lines, r.missing(PRIOR_SUITE), ""]
+    (r.out_dir / "output_prior.json").write_text(json.dumps(prior, indent=2, sort_keys=True) + "\n")
+    r.cite("table: output-length prior", "Output-length prior", [suite])
+    return [
+        *lines,
+        f"Median output tokens per class over every ok request of `{suite.suite}`, the history "
+        "the `class_prior` estimator reads:",
+        "",
+        "| Class | Median output tokens |",
+        "|---|---|",
+        *(f"| {cls} | {tokens} |" for cls, tokens in prior.items()),
+        "",
+        "Written to `output_prior.json`.",
+        "",
+    ]
+
+
 def _xcheck_section(r: _Report) -> list[str]:
     """Gateway Priority (matrix-mixed) against vLLM's native priority (xcheck-vllm-priority)
     at the ρ values and seeds both ran."""

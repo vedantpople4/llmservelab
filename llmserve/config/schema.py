@@ -298,12 +298,14 @@ class ExperimentConfig(_Model):
     def canonical(self) -> dict[str, Any]:
         """JSON-compatible dump with every default filled in; the input to `config_hash`.
 
-        `measurement.rep_cooldown` and `server.long_prefill_token_threshold` appear only when
-        set, so configs written before they existed keep their hashes and suites keep skipping
-        their finished points."""
+        `measurement.rep_cooldown`, `server.long_prefill_token_threshold` and
+        `gateway.output_prior` appear only when set, so configs written before they existed
+        keep their hashes and suites keep skipping their finished points."""
         dump = self.model_dump(mode="json")
         if not self.measurement.rep_cooldown:
             del dump["measurement"]["rep_cooldown"]
         if not self.server.long_prefill_token_threshold:
             del dump["server"]["long_prefill_token_threshold"]
+        if self.gateway.output_prior is None:
+            del dump["gateway"]["output_prior"]
         return dump
