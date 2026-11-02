@@ -16,6 +16,7 @@ from test_experiment import run_in_process
 
 from llmserve.analysis.report import DEV_BANNER, build_report, describe_run
 from llmserve.analysis.runs import Run
+from llmserve.gateway.estimators import load_prior
 from llmserve.mock import DelayModel, MockEngine
 from llmserve.scheduler.estimators import CostModel
 
@@ -247,6 +248,14 @@ def test_dev_mode_writes_a_loadable_cost_model(results: Path, tmp_path: Path) ->
     assert model.decode.n == 6  # 3 concurrencies × 2 reps
 
 
+def test_dev_mode_writes_the_output_prior_the_estimators_load(
+    results: Path, tmp_path: Path
+) -> None:
+    build_report(results, tmp_path / "out", dev=True)
+    prior = load_prior(tmp_path / "out" / "output_prior.json")
+    assert prior == {"interactive": 4, "long_context": 4}  # the fixture's fixed output length
+
+
 def test_provenance_lists_every_figure_run(results: Path, tmp_path: Path) -> None:
     md = build_report(results, tmp_path / "out", dev=True).read_text()
     provenance = md.split("## Provenance")[1]
@@ -268,6 +277,7 @@ def test_rebuild_is_byte_identical_and_drops_stale_outputs(results: Path, tmp_pa
     build_report(results, a, dev=False)
     assert not list((a / "figures").glob("*.png"))
     assert not (a / "cost_model.json").exists()
+    assert not (a / "output_prior.json").exists()
 
 
 def test_reportable_runs_are_kept_and_others_excluded(results: Path, tmp_path: Path) -> None:
