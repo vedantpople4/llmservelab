@@ -47,6 +47,7 @@ from llmserve.analysis.policies import (
     inflight_cap_table,
     matrix_requests,
     policy_summary,
+    prefill_interference,
     slowdown_deciles,
 )
 from llmserve.analysis.profile import Profile, kv_at_dispatch, profile
@@ -784,6 +785,14 @@ def _scheduling_section(r: _Report, verdict: Verdict, model: CostModel | None) -
         ttft = class_ttft(requests)
         lines += _policy_table(policy_summary(suite), ttft)
         r.cite(f"table: policies ({workload})", f"Policy comparison, {workload}", [suite])
+        interference = prefill_interference(suite)
+        if not interference.empty:
+            lines += _interference_table(interference)
+            r.cite(
+                f"table: prefill interference ({workload})",
+                f"Prefill interference, {workload}",
+                [suite],
+            )
         title = f"TTFT P95 per class and policy ({name})"
         lines += [
             r.save(
@@ -833,6 +842,22 @@ def _policy_table(summary: pd.DataFrame, ttft: pd.DataFrame) -> list[str]:
             f"| {_num(row.goodput_s, '.3f')} | {_num(row.max_wait_s, '.1f')} | "
             + " | ".join(cells)
             + " |"
+        )
+    return [*lines, ""]
+
+
+def _interference_table(frame: pd.DataFrame) -> list[str]:
+    lines = [
+        "Interactive server TTFT (dispatch to first token, all policies pooled) by the "
+        "long-context prompt tokens still prefilling at dispatch:",
+        "",
+        "| ρ | Long-context tokens ahead | Requests | Share | Server TTFT P50 (s) | P95 (s) |",
+        "|---|---|---|---|---|---|",
+    ]
+    for row in frame.itertuples():
+        lines.append(
+            f"| {row.rho:g} | {row.bucket} | {row.n} | {row.share:.0%} "
+            f"| {row.p50:.1f} | {row.p95:.1f} |"
         )
     return [*lines, ""]
 

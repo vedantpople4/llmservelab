@@ -13,6 +13,7 @@ from llmserve.analysis.policies import (
     cells,
     choose_cap,
     class_ttft,
+    interference,
     matrix_requests,
     policy_of,
     slowdown_deciles,
@@ -68,6 +69,44 @@ def test_class_ttft_reports_percentiles_per_cell_in_policy_order() -> None:
     assert list(table["policy"]) == ["fifo", "spf"]
     spf = table[table["policy"] == "spf"].iloc[0]
     assert spf["n"] == 100 and spf["p50"] == 50.5 and round(spf["p99"], 2) == 99.01
+
+
+def _request(
+    cls: str, dispatch_s: float, first_s: float, prompt: int, **kw: object
+) -> dict[str, object]:
+    row = {
+        "rho": 0.8,
+        "run_id": "r",
+        "rep": 0,
+        "ok": True,
+        "in_window": True,
+        "workload_class": cls,
+        "t_dispatch": int(dispatch_s * 1e9),
+        "t_first_token": int(first_s * 1e9),
+        "prompt_tokens_req": prompt,
+    }
+    return {**row, **kw}
+
+
+def test_interference_counts_only_blocker_prefill_in_flight_at_dispatch() -> None:
+    requests = pd.DataFrame(
+        [
+            _request("long", 0, 10, 4096),
+            _request("long", 1, 12, 8192, in_window=False),  # warm-up still blocks
+            _request("long", 20, 21, 2048),  # dispatched after every victim
+            _request("long", 0, 5, 9999, ok=False),  # failed: ignored
+            _request("short", 2, 11, 100),  # behind both: 12288 tokens
+            _request("short", 11, 12, 100),  # behind the second only: 8192
+            _request("short", 13, 13.5, 100),  # both have first tokens: none
+            _request("short", 14, 20, 100, in_window=False),  # not a measured victim
+        ]
+    )
+    table = interference(requests, "short", "long").set_index("bucket")
+    assert list(table.index) == ["none", "4k–8k", "> 8k"]
+    assert table.loc["> 8k", "p50"] == 9.0
+    assert table.loc["4k–8k", "p50"] == 1.0
+    assert table.loc["none", "p50"] == 0.5
+    assert table["n"].sum() == 3 and table["share"].sum() == 1.0
 
 
 def test_choose_cap_takes_the_smallest_within_five_percent_of_the_largest() -> None:
