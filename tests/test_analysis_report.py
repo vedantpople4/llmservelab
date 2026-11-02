@@ -34,6 +34,7 @@ MISSING = (
     "matrix-interactive",
     "matrix-long-context-heavy",
     "xcheck-vllm-priority",
+    "prefill-threshold",
 )
 
 
@@ -220,7 +221,9 @@ def test_dev_mode_banners_the_report_and_every_figure(
     assert all(DEV_BANNER in t for t in saved_titles)
     for name in figures:
         assert f"(figures/{name})" in md
-    assert "**not-run**" not in md.split("## Capacity")[0]  # every hypothesis had its inputs
+    for hid in ("H1", "H2", "H3", "H4"):  # each had its inputs; H5 waits for Phase 7
+        assert "**not-run**" not in md.split(f"| {hid} |")[1].split("\n")[0]
+    assert "**not-run**" in md.split("| H5 |")[1].split("\n")[0]
     assert "every rate sustained" in md  # one capacity point: not bracketed, says so
     assert "| TTFT growth | Slowdown growth | Sustained |" in md
     assert "amended in October 2026" in md
