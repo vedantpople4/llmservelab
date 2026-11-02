@@ -10,6 +10,8 @@ from conftest import RunFactory, experiment_config
 from test_analysis_suites import write_manifest
 
 from llmserve.analysis.policies import (
+    _sorted,
+    against_baseline,
     cells,
     choose_cap,
     class_ttft,
@@ -107,6 +109,42 @@ def test_interference_counts_only_blocker_prefill_in_flight_at_dispatch() -> Non
     assert table.loc["4k–8k", "p50"] == 1.0
     assert table.loc["none", "p50"] == 0.5
     assert table["n"].sum() == 3 and table["share"].sum() == 1.0
+
+
+def test_interference_splits_by_policy_when_asked() -> None:
+    rows = []
+    for policy, server_s in (("fifo", 9.0), ("fifo@lpt256", 1.0)):
+        rows += [
+            _request("long", 0, 10, 4096, policy=policy, run_id=policy),
+            _request("short", 2, 2 + server_s, 100, policy=policy, run_id=policy),
+        ]
+    table = interference(pd.DataFrame(rows), "short", "long", by=("rho", "policy"))
+    assert list(table["policy"]) == ["fifo", "fifo@lpt256"]
+    assert list(table["p50"]) == [9.0, 1.0]
+    assert list(table["share"]) == [1.0, 1.0]
+
+
+def test_thresholds_sort_numerically_after_their_base_policy() -> None:
+    policies = ["spf", "fifo@lpt1024", "fifo", "fifo@lpt256", "waas"]
+    table = _sorted(pd.DataFrame({"rho": 0.8, "policy": policies}))
+    assert list(table["policy"]) == ["fifo", "fifo@lpt256", "fifo@lpt1024", "spf", "waas"]
+
+
+def test_against_baseline_compares_each_policy_at_the_same_rho() -> None:
+    fast, slow = list(np.arange(1.0, 41.0)), list(np.arange(11.0, 51.0))
+    requests = pd.concat(
+        [
+            frame("fifo", [1] * 40, slow),
+            frame("waas", [1] * 40, fast),
+            frame("spf", [1] * 5, fast[:5]),  # too few to compare
+            frame("waas", [1] * 40, fast, rho=0.5),  # no baseline at this ρ
+        ],
+        ignore_index=True,
+    )
+    table = against_baseline(requests, "fifo")
+    assert list(table["policy"]) == ["waas"] and list(table["rho"]) == [0.8]
+    row = table.iloc[0]
+    assert row["diff"] == -10.0 and row["hi"] < 0 and row["n"] == row["n_base"] == 40
 
 
 def test_choose_cap_takes_the_smallest_within_five_percent_of_the_largest() -> None:
