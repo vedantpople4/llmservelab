@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import pytest
 from conftest import RunFactory, experiment_config
@@ -223,7 +224,9 @@ def test_h4_not_run_without_spf_and_fifo_at_high_rho(run_factory: RunFactory) ->
 # --- H5 ---
 
 
-def cell(waas: np.ndarray, fifo: np.ndarray, ratio: float = 1.0) -> H5Cell:
+def cell(
+    waas: npt.NDArray[np.float64], fifo: npt.NDArray[np.float64], ratio: float = 1.0
+) -> H5Cell:
     return H5Cell(waas, fifo, (30.0 * ratio,), (30.0,))
 
 
@@ -253,7 +256,7 @@ def test_h5_inconclusive_when_wide_or_short_and_not_run_without_both() -> None:
     rng = np.random.default_rng(3)
     v = judge_h5({0.85: cell(rng.exponential(1.0, 40), rng.exponential(1.0, 40))})
     assert v.status == "inconclusive"
-    v = judge_h5({0.95: cell(np.full(19, 1.0), np.full(100, 5.0))})
+    v = judge_h5({0.95: cell(np.full(19, 1.0, np.float64), np.full(100, 5.0, np.float64))})
     assert v.status == "inconclusive" and "Too few" in v.summary
     assert judge_h5({}).status == "not-run"
     assert h5(None).status == "not-run"
