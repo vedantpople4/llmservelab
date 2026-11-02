@@ -131,7 +131,7 @@ def test_thresholds_sort_numerically_after_their_base_policy() -> None:
 
 
 def test_against_baseline_compares_each_policy_at_the_same_rho() -> None:
-    fast, slow = list(np.arange(1.0, 41.0)), list(np.arange(11.0, 51.0))
+    fast, slow = [float(x) for x in range(1, 41)], [float(x) for x in range(11, 51)]
     requests = pd.concat(
         [
             frame("fifo", [1] * 40, slow),
