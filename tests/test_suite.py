@@ -385,3 +385,22 @@ def test_committed_suite_validates(path: Path) -> None:
 def test_committed_suites_cover_the_contract() -> None:
     names = [load_suite(p).name for p in committed_suites()]
     assert sorted(names) == sorted(CONTRACT_SUITES)
+
+
+# Hashes of points already measured. A schema change that alters them makes every suite rerun
+# its finished points, so new config fields must stay out of `canonical()` while unset.
+MEASURED_HASHES = {
+    ("matrix_mixed", "fifo-rho050-s0"): (
+        "3641077527573eb1d7cfc13895dc0e63a6697b314b2456c649d7d07fb4d1f3c5"
+    ),
+    ("concurrency_p128", "c001"): (
+        "753b8888bb166ce0c46750b384251f2cbbd2551d7c59f6fb88d7223801e8ba12"
+    ),
+}
+
+
+@pytest.mark.parametrize(("suite", "label"), sorted(MEASURED_HASHES))
+def test_measured_points_keep_their_config_hash(suite: str, label: str) -> None:
+    points = plan_suite(load_suite(Path(f"configs/suites/{suite}.yaml")))
+    point = next(p for p in points if p.label == label)
+    assert point.config_hash == MEASURED_HASHES[(suite, label)]
