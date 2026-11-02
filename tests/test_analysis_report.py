@@ -227,7 +227,9 @@ def test_dev_mode_banners_the_report_and_every_figure(
     assert "growth on raw TTFT" not in md  # the prompt-length suite gave a prefill fit
     assert "None: development mode includes every run" in md
     assert "Smallest cap with ≥ 95% of the largest cap's generated tok/s: **" in md
-    policies = md.split("## Scheduling baselines")[1].split("###", 2)[1]
+    mixed = md.split("## Scheduling baselines")[1].split("###", 2)[1]
+    policies, interference = mixed.split("Interactive server TTFT", 1)
+    assert "| 0.8 | none |" in interference
     assert [
         line.split(" | ")[1] for line in policies.splitlines() if line.startswith("| 0.8 |")
     ] == [

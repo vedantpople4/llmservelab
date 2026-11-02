@@ -51,6 +51,7 @@ from llmserve.analysis.policies import (
     matrix_requests,
     output_prior,
     policy_summary,
+    prefill_interference,
     slowdown_deciles,
 )
 from llmserve.analysis.profile import Profile, kv_at_dispatch, profile
@@ -791,6 +792,14 @@ def _scheduling_section(r: _Report, verdict: Verdict, model: CostModel | None) -
         ttft = class_ttft(requests)
         lines += _policy_table(policy_summary(suite), ttft)
         r.cite(f"table: policies ({workload})", f"Policy comparison, {workload}", [suite])
+        interference = prefill_interference(suite)
+        if not interference.empty:
+            lines += _interference_table(interference)
+            r.cite(
+                f"table: prefill interference ({workload})",
+                f"Prefill interference, {workload}",
+                [suite],
+            )
         title = f"TTFT P95 per class and policy ({name})"
         lines += [
             r.save(
@@ -844,26 +853,20 @@ def _policy_table(summary: pd.DataFrame, ttft: pd.DataFrame) -> list[str]:
     return [*lines, ""]
 
 
-def _output_prior_section(r: _Report) -> list[str]:
-    lines = ["## Output-length prior", ""]
-    suite = r.suite(PRIOR_SUITE)
-    prior = output_prior(suite) if suite is not None else {}
-    if suite is None or not prior:
-        return [*lines, r.missing(PRIOR_SUITE), ""]
-    (r.out_dir / "output_prior.json").write_text(json.dumps(prior, indent=2, sort_keys=True) + "\n")
-    r.cite("table: output-length prior", "Output-length prior", [suite])
-    return [
-        *lines,
-        f"Median output tokens per class over every ok request of `{suite.suite}`, the history "
-        "the `class_prior` estimator reads:",
+def _interference_table(frame: pd.DataFrame) -> list[str]:
+    lines = [
+        "Interactive server TTFT (dispatch to first token, all policies pooled) by the "
+        "long-context prompt tokens still prefilling at dispatch:",
         "",
-        "| Class | Median output tokens |",
-        "|---|---|",
-        *(f"| {cls} | {tokens} |" for cls, tokens in prior.items()),
-        "",
-        "Written to `output_prior.json`.",
-        "",
+        "| ρ | Long-context tokens ahead | Requests | Share | Server TTFT P50 (s) | P95 (s) |",
+        "|---|---|---|---|---|---|",
     ]
+    for row in frame.itertuples():
+        lines.append(
+            f"| {row.rho:g} | {row.bucket} | {row.n} | {row.share:.0%} "
+            f"| {row.p50:.1f} | {row.p95:.1f} |"
+        )
+    return [*lines, ""]
 
 
 def _xcheck_section(r: _Report) -> list[str]:
