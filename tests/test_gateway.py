@@ -198,7 +198,7 @@ def test_the_estimator_sets_what_the_scheduler_and_the_record_see() -> None:
 
 
 def test_the_gateway_feeds_ok_completions_to_the_estimator() -> None:
-    async def run() -> list[int]:
+    async def run() -> list[int | None]:
         send, _state = make_sender()
         online = estimators.Online()
         gateway = Gateway(
