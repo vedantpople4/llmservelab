@@ -55,11 +55,22 @@ class Cell:
 
 
 def policy_of(run: Run) -> str:
-    """The gateway scheduler, or `vllm-priority`/`none` without a gateway, suffixed with
-    `@lpt<T>` when vLLM ran with a long-prefill token threshold T."""
+    """The gateway scheduler, or `vllm-priority`/`none` without a gateway, with its params as
+    `[k=v,...]` when any are set, suffixed with `@lpt<T>` when vLLM ran with a long-prefill token
+    threshold T."""
     cfg = run.config
     if cfg.gateway.enabled:
-        name = cfg.gateway.scheduler.name
+        spec = cfg.gateway.scheduler
+        name = spec.name
+        if spec.params:
+            name += (
+                "["
+                + ",".join(
+                    f"{k}={v:g}" if isinstance(v, float) else f"{k}={v}"
+                    for k, v in sorted(spec.params.items())
+                )
+                + "]"
+            )
     else:
         name = VLLM_PRIORITY if cfg.server.scheduling_policy == "priority" else "none"
     threshold = cfg.server.long_prefill_token_threshold
@@ -77,11 +88,12 @@ def cells(suite: SuiteRuns) -> list[Cell]:
     return sorted(out, key=lambda c: (c.rho, _policy_rank(c.policy), c.seed))
 
 
-def _policy_rank(policy: str) -> tuple[int, str, int]:
-    base, _, threshold = policy.partition(THRESHOLD_TAG)
+def _policy_rank(policy: str) -> tuple[int, str, int, str]:
+    tagged, _, threshold = policy.partition(THRESHOLD_TAG)
+    base, _, params = tagged.partition("[")
     known = base in POLICY_ORDER
     rank = POLICY_ORDER.index(base) if known else len(POLICY_ORDER)
-    return rank, "" if known else base, int(threshold or 0)
+    return rank, "" if known else base, int(threshold or 0), params
 
 
 def measured(run: Run) -> pd.DataFrame:

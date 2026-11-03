@@ -130,6 +130,25 @@ def test_thresholds_sort_numerically_after_their_base_policy() -> None:
     assert list(table["policy"]) == ["fifo", "fifo@lpt256", "fifo@lpt1024", "spf", "waas"]
 
 
+def test_policy_label_names_scheduler_params(run_factory: RunFactory) -> None:
+    gateway = {
+        "enabled": True,
+        "scheduler": {"name": "waas", "params": {"max_bypass": 8, "cost_weight": 0.5}},
+    }
+    cfg = experiment_config(repetitions=1, gateway=gateway)
+    assert policy_of(run_factory(cfg)) == "waas[cost_weight=0.5,max_bypass=8]"
+
+
+def test_params_sort_after_their_base_policy() -> None:
+    policies = ["waas[cost_weight=1]@lpt256", "fifo@lpt256", "waas[cost_weight=0.5]@lpt256"]
+    table = _sorted(pd.DataFrame({"rho": 0.95, "policy": policies}))
+    assert list(table["policy"]) == [
+        "fifo@lpt256",
+        "waas[cost_weight=0.5]@lpt256",
+        "waas[cost_weight=1]@lpt256",
+    ]
+
+
 def test_against_baseline_compares_each_policy_at_the_same_rho() -> None:
     fast, slow = [float(x) for x in range(1, 41)], [float(x) for x in range(11, 51)]
     requests = pd.concat(

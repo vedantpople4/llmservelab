@@ -35,6 +35,7 @@ MISSING = (
     "matrix-long-context-heavy",
     "xcheck-vllm-priority",
     "prefill-threshold",
+    "waas-tuning",
 )
 
 
