@@ -89,6 +89,7 @@ MATRICES = (
 )
 XCHECK = ("xcheck-vllm-priority",)
 THRESHOLD = ("prefill-threshold",)
+WAAS_TUNING = ("waas-tuning",)
 PRIOR_SUITE = ("matrix-mixed",)
 DEV_SUITES = frozenset({"dev-concurrency", "dev-prompt-length"})
 BASELINE = tuple(f"e{n:02d}" for n in range(1, 8))
@@ -234,6 +235,7 @@ def build_report(results_root: Path, out_dir: Path, *, dev: bool = False) -> Pat
         *_inflight_cap_section(r),
         *_scheduling_section(r, verdicts[3], model),
         *_threshold_section(r),
+        *_tuning_section(r),
         *_output_prior_section(r),
     ]
     lines = ["# Baseline performance report", ""]
@@ -909,6 +911,44 @@ def _threshold_section(r: _Report) -> list[str]:
     title = "TTFT P95 per class and long-prefill threshold (prefill-threshold)"
     figure = plots.policy_ttft_bars(ttft, title=r.title(title))
     return [*lines, r.save(figure, "ttft_prefill-threshold", [suite], title), ""]
+
+
+def _tuning_section(r: _Report) -> list[str]:
+    """WAAS's cost_weight × max_bypass grid against FIFO on the tuning seeds (ADR-0014)."""
+    lines = [
+        "## WAAS tuning (ADR-0014)",
+        "",
+        "WAAS's `cost_weight` × `max_bypass` grid and FIFO behind the gateway on the mixed "
+        "workload, on the tuning seeds, against a vLLM started with "
+        "`--long-prefill-token-threshold` 256. Schedulers see class-prior output estimates.",
+        "",
+    ]
+    suite = r.suite(WAAS_TUNING)
+    if suite is None or not suite.points:
+        return [*lines, r.missing(WAAS_TUNING), ""]
+    requests = matrix_requests(suite)
+    ttft = class_ttft(requests)
+    lines += _policy_table(policy_summary(suite), ttft)
+    r.cite("table: WAAS tuning", "WAAS tuning", [suite])
+    baseline = next((p for p in requests["policy"].unique() if p.startswith("fifo")), None)
+    diffs = against_baseline(requests, baseline) if baseline else pd.DataFrame()
+    if not diffs.empty:
+        lines += [
+            f"TTFT P95 against `{baseline}` at the same ρ, with 95% bootstrap CIs:",
+            "",
+            "| ρ | Policy | Class | P95 (s) | FIFO P95 (s) | Δ (s) | 95% CI of Δ (s) |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for row in diffs.itertuples():
+            lines.append(
+                f"| {row.rho:g} | {row.policy} | {row.workload_class} "
+                f"| {row.value:.1f} | {row.base:.1f} | {row.diff:+.1f} "
+                f"| {row.lo:+.1f} to {row.hi:+.1f} |"
+            )
+        lines.append("")
+    title = "TTFT P95 per class and WAAS setting (waas-tuning)"
+    figure = plots.policy_ttft_bars(ttft, title=r.title(title))
+    return [*lines, r.save(figure, "ttft_waas-tuning", [suite], title), ""]
 
 
 def _threshold(policy: str) -> str:

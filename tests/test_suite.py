@@ -54,6 +54,7 @@ CONTRACT_SUITES = {
     "matrix-long-context-heavy",
     "xcheck-vllm-priority",
     "prefill-threshold",
+    "waas-tuning",
     "dev-concurrency",
     "dev-prompt-length",
 }
