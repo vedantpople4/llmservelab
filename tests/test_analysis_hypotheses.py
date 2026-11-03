@@ -21,6 +21,7 @@ from llmserve.analysis.hypotheses import (
     h3,
     h4,
     h5,
+    h5_pair,
     judge_h1,
     judge_h2,
     judge_h3,
@@ -261,3 +262,14 @@ def test_h5_inconclusive_when_wide_or_short_and_not_run_without_both() -> None:
     assert judge_h5({}).status == "not-run"
     assert h5(None).status == "not-run"
     assert h5(SuiteRuns("eval-mixed", "f.yaml", "x", ())).status == "not-run"
+
+
+def test_h5_pairs_waas_and_fifo_whatever_the_params_at_one_threshold() -> None:
+    tuned = "waas[cost_weight=0.5,max_bypass=8]@lpt256"
+    assert h5_pair([tuned, "fifo@lpt256", "spf@lpt256"]) == (tuned, "fifo@lpt256")
+    assert h5_pair(["waas", "fifo"]) == ("waas", "fifo")
+    assert h5_pair(["waas", "spf"]) is None
+    with pytest.raises(ValueError, match="one long-prefill threshold"):
+        h5_pair([tuned, "fifo"])
+    with pytest.raises(ValueError, match="one WAAS and one FIFO"):
+        h5_pair([tuned, "waas@lpt256", "fifo@lpt256"])
