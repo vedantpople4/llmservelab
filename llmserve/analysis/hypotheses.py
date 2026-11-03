@@ -38,8 +38,9 @@ percentile bootstrap CI (B = 10,000, seed 0) of `P95(SPF) − P95(FIFO)`.
 - not-run when no ρ ≥ 0.8 has both an SPF and a FIFO point.
 
 **H5, WAAS** (`eval-mixed`, plan Phase 7; fixed in November 2026 before any WAAS run). Per
-ρ ≥ 0.85, TTFT of the ok, in-window `interactive` requests of the WAAS and FIFO points, each
-pooled across seeds, and the across-run mean generated tok/s of each. The seeds are held out:
+ρ ≥ 0.85, TTFT of the ok, in-window `interactive` requests of the WAAS points (one setting,
+whatever its params) and the FIFO points at the same long-prefill threshold, each pooled across
+seeds, and the across-run mean generated tok/s of each. The seeds are held out:
 none was used to tune WAAS. The percentile bootstrap CI (B = 10,000, seed 0) of
 `P95(WAAS) − P95(FIFO)`.
 - refuted iff at any such ρ WAAS keeps < 95% of FIFO's mean generated tok/s;
@@ -51,7 +52,7 @@ none was used to tune WAAS. The percentile bootstrap CI (B = 10,000, seed 0) of
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -59,7 +60,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from llmserve.analysis.policies import cells, matrix_requests
+from llmserve.analysis.policies import cells, matrix_requests, split_policy
 from llmserve.analysis.runs import Run
 from llmserve.analysis.stats import DiffCI, bootstrap_percentile_diff
 from llmserve.analysis.suites import SuiteRuns, sweep_table
@@ -443,12 +444,34 @@ def h5(suite: SuiteRuns | None) -> Verdict:
                 policy: group["ttft_s"].dropna().to_numpy(np.float64)
                 for policy, group in at_rho.groupby("policy")
             }
-            waas, fifo = toks.get((float(rho), "waas")), toks.get((float(rho), "fifo"))
-            if "waas" in ttft and "fifo" in ttft and waas and fifo:
-                samples[float(rho)] = H5Cell(ttft["waas"], ttft["fifo"], tuple(waas), tuple(fifo))
+            pair = h5_pair(ttft)
+            if pair is None:
+                continue
+            waas, fifo = toks.get((float(rho), pair[0])), toks.get((float(rho), pair[1]))
+            if waas and fifo:
+                samples[float(rho)] = H5Cell(ttft[pair[0]], ttft[pair[1]], tuple(waas), tuple(fifo))
     verdict = judge_h5(samples)
     verdict.evidence["suite"] = suite.suite
     return verdict
+
+
+def h5_pair(policies: Iterable[str]) -> tuple[str, str] | None:
+    """The WAAS and FIFO labels among one ρ's `policy_of` labels, whatever WAAS's params, or
+    None without both. More than one of either, or the two at different long-prefill
+    thresholds, is a misbuilt eval suite and raises."""
+    found: dict[str, list[str]] = {"waas": [], "fifo": []}
+    for policy in policies:
+        name = split_policy(policy)[0]
+        if name in found:
+            found[name].append(policy)
+    if not found["waas"] or not found["fifo"]:
+        return None
+    if len(found["waas"]) > 1 or len(found["fifo"]) > 1:
+        raise ValueError(f"H5 needs one WAAS and one FIFO setting per ρ, got {found}")
+    waas, fifo = found["waas"][0], found["fifo"][0]
+    if split_policy(waas)[2] != split_policy(fifo)[2]:
+        raise ValueError(f"H5 compares at one long-prefill threshold, got {waas} and {fifo}")
+    return waas, fifo
 
 
 def judge_h5(samples: Mapping[float, H5Cell]) -> Verdict:

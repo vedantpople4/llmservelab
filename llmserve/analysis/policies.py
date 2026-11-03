@@ -88,12 +88,19 @@ def cells(suite: SuiteRuns) -> list[Cell]:
     return sorted(out, key=lambda c: (c.rho, _policy_rank(c.policy), c.seed))
 
 
-def _policy_rank(policy: str) -> tuple[int, str, int, str]:
+def split_policy(policy: str) -> tuple[str, str, int]:
+    """A `policy_of` label's scheduler name, params tag (`""` when none) and threshold (0 when
+    unset)."""
     tagged, _, threshold = policy.partition(THRESHOLD_TAG)
     base, _, params = tagged.partition("[")
+    return base, params.removesuffix("]"), int(threshold or 0)
+
+
+def _policy_rank(policy: str) -> tuple[int, str, int, str]:
+    base, params, threshold = split_policy(policy)
     known = base in POLICY_ORDER
     rank = POLICY_ORDER.index(base) if known else len(POLICY_ORDER)
-    return rank, "" if known else base, int(threshold or 0), params
+    return rank, "" if known else base, threshold, params
 
 
 def measured(run: Run) -> pd.DataFrame:
