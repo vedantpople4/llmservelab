@@ -6,7 +6,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 from conftest import RunFactory, experiment_config
+from test_analysis_profile import power_sample
 from test_analysis_suites import write_manifest
 
 from llmserve.analysis.policies import (
@@ -17,10 +19,13 @@ from llmserve.analysis.policies import (
     class_ttft,
     interference,
     matrix_requests,
+    measured,
+    paired,
     policy_of,
     slowdown_deciles,
 )
 from llmserve.analysis.suites import load_suite_runs
+from llmserve.runner import storage
 from llmserve.scheduler.estimators import CostModel, DecodeFit, PrefillFit
 
 # Service time = prompt tokens / 1000 s: prefill only, no decode cost.
@@ -203,3 +208,48 @@ def test_cells_read_policy_rho_and_seed_from_each_runs_config(
     assert set(requests["policy"]) == {"fifo", "spf"} and set(requests["rho"]) == {0.8}
     assert requests["ok"].all() and requests["in_window"].all()
     assert policy_of(run_factory(experiment_config(repetitions=1))) == "none"
+
+
+def test_paired_compares_each_run_with_the_baseline_at_its_seed(
+    run_factory: RunFactory, tmp_path: Path
+) -> None:
+    root = tmp_path / "results"
+    points = []
+    for policy, seed in (("spf", 42), ("fifo", 42), ("spf", 43)):
+        load = {
+            "mode": "open",
+            "arrival": {"process": "poisson", "rho": 0.8},
+            "capacity_rps": 40,
+            "duration_s": 0.5,
+        }
+        gateway = {"enabled": True, "max_in_flight": 2, "scheduler": {"name": policy}}
+        run = run_factory(
+            experiment_config(
+                experiment=f"m-{policy}-{seed}",
+                seed=seed,
+                repetitions=1,
+                load=load,
+                gateway=gateway,
+            )
+        )
+        points.append((f"{policy}-s{seed - 42}", None, run, "done"))
+    (rep,) = points[0][2].rep_dirs()
+    storage.write_power(rep / "power.parquet", [power_sample(1, 10.0), power_sample(2, 10.0)])
+    write_manifest(root, "waas-paired", None, points)
+    suite = load_suite_runs(root, "waas-paired")
+    assert suite is not None
+    table = paired(suite, "fifo", "c")
+    assert list(zip(table["seed"], table["policy"], strict=True)) == [
+        (42, "fifo"),
+        (42, "spf"),
+        (43, "spf"),
+    ]
+    p95 = {
+        (c.seed, c.policy): float(np.percentile(measured(c.run)["ttft_s"].dropna(), 95))
+        for c in cells(suite)
+    }
+    assert list(table["ttft"]) == pytest.approx([p95[42, "fifo"], p95[42, "spf"], p95[43, "spf"]])
+    assert table["diff"].iloc[0] == 0.0
+    assert table["diff"].iloc[1] == pytest.approx(p95[42, "spf"] - p95[42, "fifo"])
+    assert np.isnan(table["diff"].iloc[2])  # no FIFO run at seed 43
+    assert table["gpu_mhz"].iloc[1] == 1000.0 and np.isnan(table["gpu_mhz"].iloc[0])

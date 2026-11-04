@@ -54,9 +54,11 @@ from llmserve.analysis.policies import (
     inflight_cap_table,
     matrix_requests,
     output_prior,
+    paired,
     policy_summary,
     prefill_interference,
     slowdown_deciles,
+    split_policy,
 )
 from llmserve.analysis.profile import Profile, kv_at_dispatch, profile
 from llmserve.analysis.runs import Run, latest_run
@@ -89,7 +91,7 @@ MATRICES = (
 )
 XCHECK = ("xcheck-vllm-priority",)
 THRESHOLD = ("prefill-threshold",)
-WAAS_TUNING = ("waas-tuning",)
+WAAS_TUNING = ("waas-paired",)
 PRIOR_SUITE = ("matrix-mixed",)
 DEV_SUITES = frozenset({"dev-concurrency", "dev-prompt-length"})
 BASELINE = tuple(f"e{n:02d}" for n in range(1, 8))
@@ -842,10 +844,10 @@ def _scheduling_section(r: _Report, verdict: Verdict, model: CostModel | None) -
 def _policy_table(summary: pd.DataFrame, ttft: pd.DataFrame) -> list[str]:
     classes = sorted(ttft["workload_class"].unique()) if not ttft.empty else []
     lines = [
-        "| ρ | Policy | Runs | Gen tok/s | Goodput (req/s) | Max wait (s) | "
+        "| ρ | Policy | Runs | Gen tok/s | Goodput (req/s) | Max wait (s) | GPU MHz | "
         + " | ".join(f"{c} TTFT P50 / P95 / P99 (s)" for c in classes)
         + " |",
-        "|---|---|---|---|---|---|" + "---|" * len(classes),
+        "|---|---|---|---|---|---|---|" + "---|" * len(classes),
     ]
     by_cell = {(row.rho, row.policy, row.workload_class): row for row in ttft.itertuples()}
     for row in summary.itertuples():
@@ -855,9 +857,8 @@ def _policy_table(summary: pd.DataFrame, ttft: pd.DataFrame) -> list[str]:
             cells.append("—" if t is None else f"{t.p50:.1f} / {t.p95:.1f} / {t.p99:.1f}")
         lines.append(
             f"| {row.rho:g} | {row.policy} | {row.runs} | {_num(row.gen_toks_s, '.1f')} "
-            f"| {_num(row.goodput_s, '.3f')} | {_num(row.max_wait_s, '.1f')} | "
-            + " | ".join(cells)
-            + " |"
+            f"| {_num(row.goodput_s, '.3f')} | {_num(row.max_wait_s, '.1f')} "
+            f"| {_num(row.gpu_mhz, '.0f')} | " + " | ".join(cells) + " |"
         )
     return [*lines, ""]
 
@@ -914,13 +915,16 @@ def _threshold_section(r: _Report) -> list[str]:
 
 
 def _tuning_section(r: _Report) -> list[str]:
-    """WAAS's cost_weight × max_bypass grid against FIFO on the tuning seeds (ADR-0014)."""
+    """WAAS settings against FIFO, run back to back per tuning seed (ADR-0014)."""
     lines = [
         "## WAAS tuning (ADR-0014)",
         "",
-        "WAAS's `cost_weight` × `max_bypass` grid and FIFO behind the gateway on the mixed "
-        "workload, on the tuning seeds, against a vLLM started with "
-        "`--long-prefill-token-threshold` 256. Schedulers see class-prior output estimates.",
+        "FIFO and WAAS settings behind the gateway on the mixed workload, against a vLLM started "
+        "with `--long-prefill-token-threshold` 256, with class-prior output estimates. Each "
+        "tuning seed runs its policies back to back, in alternating order from seed to seed, so "
+        "a run is compared with the FIFO run beside it. The sustained GPU clock of the fanless "
+        "Mac varies about 20% from run to run, and at ρ 0.95 that moves the tail more than "
+        "most settings do.",
         "",
     ]
     suite = r.suite(WAAS_TUNING)
@@ -930,25 +934,24 @@ def _tuning_section(r: _Report) -> list[str]:
     ttft = class_ttft(requests)
     lines += _policy_table(policy_summary(suite), ttft)
     r.cite("table: WAAS tuning", "WAAS tuning", [suite])
-    baseline = next((p for p in requests["policy"].unique() if p.startswith("fifo")), None)
-    diffs = against_baseline(requests, baseline) if baseline else pd.DataFrame()
-    if not diffs.empty:
+    baseline = next((p for p in requests["policy"].unique() if split_policy(p)[0] == "fifo"), None)
+    runs = paired(suite, baseline, "interactive") if baseline else pd.DataFrame()
+    if not runs.empty:
         lines += [
-            f"TTFT P95 against `{baseline}` at the same ρ, with 95% bootstrap CIs:",
+            f"Interactive TTFT P95 per run, and its difference from `{baseline}` at the same seed:",
             "",
-            "| ρ | Policy | Class | P95 (s) | FIFO P95 (s) | Δ (s) | 95% CI of Δ (s) |",
-            "|---|---|---|---|---|---|---|",
+            "| ρ | Seed | Policy | GPU MHz | P95 (s) | Δ vs FIFO (s) |",
+            "|---|---|---|---|---|---|",
         ]
-        for row in diffs.itertuples():
+        for row in runs.itertuples():
             lines.append(
-                f"| {row.rho:g} | {row.policy} | {row.workload_class} "
-                f"| {row.value:.1f} | {row.base:.1f} | {row.diff:+.1f} "
-                f"| {row.lo:+.1f} to {row.hi:+.1f} |"
+                f"| {row.rho:g} | {row.seed} | {row.policy} | {_num(row.gpu_mhz, '.0f')} "
+                f"| {row.ttft:.1f} | {_num(row.diff, '+.1f')} |"
             )
         lines.append("")
-    title = "TTFT P95 per class and WAAS setting (waas-tuning)"
+    title = "TTFT P95 per class and WAAS setting (waas-paired)"
     figure = plots.policy_ttft_bars(ttft, title=r.title(title))
-    return [*lines, r.save(figure, "ttft_waas-tuning", [suite], title), ""]
+    return [*lines, r.save(figure, "ttft_waas-paired", [suite], title), ""]
 
 
 def _threshold(policy: str) -> str:
