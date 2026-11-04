@@ -56,6 +56,7 @@ CONTRACT_SUITES = {
     "prefill-threshold",
     "waas-tuning",
     "waas-paired",
+    "threshold-paired",
     "dev-concurrency",
     "dev-prompt-length",
 }

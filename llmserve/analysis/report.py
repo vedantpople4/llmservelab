@@ -90,7 +90,7 @@ MATRICES = (
     ("long-context-heavy", "matrix-long-context-heavy"),
 )
 XCHECK = ("xcheck-vllm-priority",)
-THRESHOLD = ("prefill-threshold",)
+THRESHOLD = ("threshold-paired",)
 WAAS_TUNING = ("waas-paired",)
 PRIOR_SUITE = ("matrix-mixed",)
 DEV_SUITES = frozenset({"dev-concurrency", "dev-prompt-length"})
@@ -869,7 +869,9 @@ def _threshold_section(r: _Report) -> list[str]:
         "## Long-prefill threshold (ADR-0014)",
         "",
         "FIFO behind the gateway on the mixed workload, against a vLLM started with "
-        "`--long-prefill-token-threshold` T. `fifo@lptT` is threshold T; plain `fifo` is unset.",
+        "`--long-prefill-token-threshold` T. `fifo@lptT` is threshold T; plain `fifo` is unset. "
+        "Each seed runs both thresholds back to back, in alternating order from seed to seed, "
+        "so a run is compared with the unset run beside it.",
         "",
     ]
     suite = r.suite(THRESHOLD)
@@ -879,6 +881,7 @@ def _threshold_section(r: _Report) -> list[str]:
     ttft = class_ttft(requests)
     lines += _policy_table(policy_summary(suite), ttft)
     r.cite("table: long-prefill threshold", "Long-prefill threshold", [suite])
+    lines += _paired_table(paired(suite, "fifo", "interactive"), "fifo")
     diffs = against_baseline(requests, "fifo")
     if not diffs.empty:
         lines += [
@@ -909,9 +912,9 @@ def _threshold_section(r: _Report) -> list[str]:
                 f"| {row.share:.0%} | {row.p50:.1f} | {row.p95:.1f} |"
             )
         lines.append("")
-    title = "TTFT P95 per class and long-prefill threshold (prefill-threshold)"
+    title = "TTFT P95 per class and long-prefill threshold (threshold-paired)"
     figure = plots.policy_ttft_bars(ttft, title=r.title(title))
-    return [*lines, r.save(figure, "ttft_prefill-threshold", [suite], title), ""]
+    return [*lines, r.save(figure, "ttft_threshold-paired", [suite], title), ""]
 
 
 def _tuning_section(r: _Report) -> list[str]:
@@ -935,23 +938,29 @@ def _tuning_section(r: _Report) -> list[str]:
     lines += _policy_table(policy_summary(suite), ttft)
     r.cite("table: WAAS tuning", "WAAS tuning", [suite])
     baseline = next((p for p in requests["policy"].unique() if split_policy(p)[0] == "fifo"), None)
-    runs = paired(suite, baseline, "interactive") if baseline else pd.DataFrame()
-    if not runs.empty:
-        lines += [
-            f"Interactive TTFT P95 per run, and its difference from `{baseline}` at the same seed:",
-            "",
-            "| ρ | Seed | Policy | GPU MHz | P95 (s) | Δ vs FIFO (s) |",
-            "|---|---|---|---|---|---|",
-        ]
-        for row in runs.itertuples():
-            lines.append(
-                f"| {row.rho:g} | {row.seed} | {row.policy} | {_num(row.gpu_mhz, '.0f')} "
-                f"| {row.ttft:.1f} | {_num(row.diff, '+.1f')} |"
-            )
-        lines.append("")
+    if baseline:
+        lines += _paired_table(paired(suite, baseline, "interactive"), baseline)
     title = "TTFT P95 per class and WAAS setting (waas-paired)"
     figure = plots.policy_ttft_bars(ttft, title=r.title(title))
     return [*lines, r.save(figure, "ttft_waas-paired", [suite], title), ""]
+
+
+def _paired_table(runs: pd.DataFrame, baseline: str) -> list[str]:
+    if runs.empty:
+        return []
+    lines = [
+        f"Interactive TTFT P95 per run, and its difference from `{baseline}` at the same ρ and "
+        "seed:",
+        "",
+        f"| ρ | Seed | Policy | GPU MHz | P95 (s) | Δ vs `{baseline}` (s) |",
+        "|---|---|---|---|---|---|",
+    ]
+    for row in runs.itertuples():
+        lines.append(
+            f"| {row.rho:g} | {row.seed} | {row.policy} | {_num(row.gpu_mhz, '.0f')} "
+            f"| {row.ttft:.1f} | {_num(row.diff, '+.1f')} |"
+        )
+    return [*lines, ""]
 
 
 def _threshold(policy: str) -> str:
