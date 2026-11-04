@@ -55,6 +55,7 @@ CONTRACT_SUITES = {
     "xcheck-vllm-priority",
     "prefill-threshold",
     "waas-tuning",
+    "waas-paired",
     "dev-concurrency",
     "dev-prompt-length",
 }

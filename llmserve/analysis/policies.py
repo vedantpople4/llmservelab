@@ -28,6 +28,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from llmserve.analysis.profile import profile
 from llmserve.analysis.runs import Run
 from llmserve.analysis.stats import bootstrap_percentile_diff
 from llmserve.analysis.suites import SuiteRuns
@@ -135,8 +136,8 @@ def class_ttft(requests: pd.DataFrame) -> pd.DataFrame:
 
 
 def policy_summary(suite: SuiteRuns) -> pd.DataFrame:
-    """Per (ρ, policy): runs, mean generated tok/s and goodput across runs, and the max gateway
-    wait over every measured request."""
+    """Per (ρ, policy): runs, mean generated tok/s and goodput across runs, the max gateway
+    wait over every measured request, and the runs' mean GPU clock."""
     groups: dict[tuple[float, str], list[Cell]] = {}
     for cell in cells(suite):
         groups.setdefault((cell.rho, cell.policy), []).append(cell)
@@ -145,6 +146,7 @@ def policy_summary(suite: SuiteRuns) -> pd.DataFrame:
         tput = [v for c in group for v in c.run.rep_metric("throughput.gen_toks_s")]
         good = [v for c in group for v in c.run.rep_metric("goodput_s")]
         waits = [measured(c.run)["queue_wait_s"].max() for c in group]
+        clocks = [m for c in group if not np.isnan(m := _gpu_mhz(c.run))]
         rows.append(
             {
                 "rho": rho,
@@ -153,9 +155,45 @@ def policy_summary(suite: SuiteRuns) -> pd.DataFrame:
                 "gen_toks_s": float(np.mean(tput)) if tput else float("nan"),
                 "goodput_s": float(np.mean(good)) if good else float("nan"),
                 "max_wait_s": float(np.nanmax(waits)) if waits else float("nan"),
+                "gpu_mhz": float(np.mean(clocks)) if clocks else float("nan"),
             }
         )
     return _sorted(pd.DataFrame(rows))
+
+
+def _gpu_mhz(run: Run) -> float:
+    power = profile(run).power
+    return power.gpu_freq_mhz if power else float("nan")
+
+
+def paired(suite: SuiteRuns, baseline: str, cls: str, q: float = 95.0) -> pd.DataFrame:
+    """Per run: ρ, seed, policy, its mean GPU clock, `cls` TTFT `pct_q` over its measured
+    requests, and that minus the `baseline` run's at the same ρ and seed (NaN without one).
+    A paired suite runs a seed's policies back to back, so each difference compares runs on a
+    similar machine state; the clock column shows how similar."""
+    rows = []
+    for cell in cells(suite):
+        frame = measured(cell.run)
+        ttft = frame.loc[frame["workload_class"] == cls, "ttft_s"].dropna()
+        rows.append(
+            {
+                "rho": cell.rho,
+                "seed": cell.seed,
+                "policy": cell.policy,
+                "gpu_mhz": _gpu_mhz(cell.run),
+                "ttft": float(np.percentile(ttft, q)) if len(ttft) else float("nan"),
+            }
+        )
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return frame
+    base = frame[frame["policy"] == baseline].set_index(["rho", "seed"])["ttft"]
+    keys = pd.MultiIndex.from_frame(frame[["rho", "seed"]])
+    frame["diff"] = frame["ttft"].to_numpy() - base.reindex(keys).to_numpy()
+    ordered = frame.assign(_rank=frame["policy"].map(_policy_rank))
+    return (
+        ordered.sort_values(["rho", "seed", "_rank"]).drop(columns="_rank").reset_index(drop=True)
+    )
 
 
 def slowdown_deciles(requests: pd.DataFrame, model: CostModel) -> pd.DataFrame:
