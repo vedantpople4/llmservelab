@@ -60,3 +60,18 @@ treats prefill interference as a separate experiment.
   bypass bound (`max_bypass` unbounded) and each estimator.
 - The server-threshold result may move the headline comparison from "gateway scheduling against
   FIFO" to "gateway scheduling on a server configured for mixed prompts". Both are reported.
+
+## Outcome (November 2026)
+
+Details are in `docs/findings/waas-on-a-threshold-server.md`.
+
+- **The threshold removes most of the tail.** Paired at matched GPU clocks,
+  `--long-prefill-token-threshold 256` cut FIFO's interactive P95 by about 10 s at ρ 0.8 and
+  0.95. Long-context P95 rose by 8 to 12 s, and throughput did not fall. WAAS was evaluated on
+  a server with it set, as planned above.
+- **Tuning froze cost_weight 2 and max_bypass 32.** It was the only setting below FIFO on every
+  tuning seed. max_bypass 8 against 32 made no visible difference.
+- **H5 is inconclusive.** On held-out seeds the P95 change was +0.37 s at ρ 0.85 and −0.49 s at
+  ρ 0.95 (95% CI −4.28 to +2.13 s), with throughput within 1% of FIFO's. The headline
+  comparison is therefore "gateway scheduling on a server configured for mixed prompts", and
+  on this platform the server setting, not the admission order, carries the gain.
