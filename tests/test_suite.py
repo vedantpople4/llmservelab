@@ -58,6 +58,7 @@ CONTRACT_SUITES = {
     "waas-paired",
     "threshold-paired",
     "eval-mixed",
+    "xcheck-paired",
     "dev-concurrency",
     "dev-prompt-length",
 }
