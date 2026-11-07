@@ -2,7 +2,8 @@
 
 Run before any measured request. Everything that would silently invalidate a run lives here:
 an unreachable or wrong server, a version mismatch, prefix caching left on (which makes TTFT lie),
-and a GPU that is already busy.
+a local vLLM started with a different scheduling policy or long-prefill threshold than the config
+declares, and a GPU that is already busy.
 
 Checks that a backend cannot answer (ADR-009) are recorded as skipped rather than passed, so the
 run metadata can say what was and was not verified.
@@ -11,8 +12,10 @@ run metadata can say what was and was not verified.
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import time
 from dataclasses import dataclass, replace
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -25,6 +28,7 @@ from llmserve.runner import macos
 from llmserve.runner.clock import RunClock
 from llmserve.workload.spec import RequestSpec
 
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 GPU_IDLE_UTIL_PCT = 5.0
 GPU_SETTLE_S = 2.0  # NVML keeps reporting finished-request traffic for ~1 s after the request
 GPU_SAMPLE_S = 0.5
@@ -49,6 +53,7 @@ class EnvReport:
     version: str | None = None
     prefix_cache_probe: str | None = None
     gpu_idle: bool | None = None
+    launch_args: tuple[str, ...] | None = None
     checks: tuple[str, ...] = ()
 
     @property
@@ -112,6 +117,7 @@ async def check_server(
             checks.append("model check skipped (backend has no /v1/models)")
 
         prefix_note = await _check_prefix_cache(cfg, caps, probe, client, failures, checks, target)
+        launch_args = _check_launch_flags(cfg, target, failures, checks)
         gpu_idle = _check_gpu(caps, failures, checks)
         _check_power(checks)
     finally:
@@ -127,6 +133,7 @@ async def check_server(
         version=version,
         prefix_cache_probe=prefix_note,
         gpu_idle=gpu_idle,
+        launch_args=launch_args,
         checks=tuple(checks),
     )
 
@@ -260,6 +267,71 @@ async def _identical_prompt_ttfts(
         if i:  # the warm-up request is discarded
             ttfts.append(latency.ttft(record))
     return ttfts[0], ttfts[1]
+
+
+def _check_launch_flags(
+    cfg: ExperimentConfig, target: str, failures: list[str], checks: list[str]
+) -> tuple[str, ...] | None:
+    """vLLM reports neither flag over HTTP and accepts request priorities under either policy, so
+    the only witness is the serving process's command line, readable when it runs on this host."""
+    if cfg.server.kind not in ("vllm", "vllm-metal"):
+        return None
+    argv = local_server_argv(target)
+    if argv is None:
+        checks.append("launch flags check skipped (server is not a local process)")
+        return None
+    flags = launch_flags(argv)
+    want = {
+        "--scheduling-policy": cfg.server.scheduling_policy,
+        "--long-prefill-token-threshold": str(cfg.server.long_prefill_token_threshold),
+    }
+    defaults = {"--scheduling-policy": "fcfs", "--long-prefill-token-threshold": "0"}
+    wrong = [
+        f"{flag} {flags.get(flag, defaults[flag])} (config wants {value})"
+        for flag, value in want.items()
+        if flags.get(flag, defaults[flag]) != value
+    ]
+    if wrong:
+        failures.append("server launched with " + ", ".join(wrong))
+    else:
+        checks.append(" · ".join(f"{flag} {value}" for flag, value in want.items()))
+    return tuple(argv)
+
+
+def local_server_argv(endpoint: str) -> list[str] | None:
+    """The command line of the process listening on `endpoint`'s port, if that is this host."""
+    url = urlsplit(endpoint)
+    if url.hostname not in LOCAL_HOSTS or url.port is None:
+        return None
+    try:
+        pids = subprocess.run(
+            ["lsof", "-nP", "-t", f"-iTCP:{url.port}", "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.split()
+        if len(pids) != 1:
+            return None
+        args = subprocess.run(
+            ["ps", "-o", "args=", "-p", pids[0]], capture_output=True, text=True, timeout=5
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return args.split() or None
+
+
+def launch_flags(argv: list[str]) -> dict[str, str]:
+    """`--flag value` and `--flag=value` pairs from a command line."""
+    flags: dict[str, str] = {}
+    for i, arg in enumerate(argv):
+        if not arg.startswith("--"):
+            continue
+        name, eq, value = arg.partition("=")
+        if eq:
+            flags[name] = value
+        elif i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+            flags[name] = argv[i + 1]
+    return flags
 
 
 def _check_gpu(caps: Capabilities, failures: list[str], checks: list[str]) -> bool | None:

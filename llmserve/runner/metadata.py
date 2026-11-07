@@ -90,6 +90,8 @@ def build_metadata(
     finished_utc: str,
     warmup: dict[str, Any],
     backend_version: dict[str, Any],
+    env_checks: list[str],
+    launch_args: list[str] | None,
     samplers: dict[str, Any],
     sleep: dict[str, Any],
     power_source: dict[str, Any],
@@ -132,10 +134,11 @@ def build_metadata(
             "long_prefill_token_threshold": cfg.server.long_prefill_token_threshold,
         },
         "backend_version": backend_version,
+        "env_checks": env_checks,
         "tokenizer_revision": None,
-        # Deployment-side vLLM facts this process does not own (docker/Kaggle flags); recorded
-        # so the field exists and is filled when the harness launches the server itself.
-        "vllm_launch_args": None,
+        # The serving process's command line when env_check could read it (a local vLLM), else
+        # None: docker and Kaggle deployments keep their flags outside this process.
+        "vllm_launch_args": launch_args,
         "max_model_len": None,
         "gpu_memory_utilization": None,
         "max_num_seqs": None,

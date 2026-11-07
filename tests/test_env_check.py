@@ -270,3 +270,54 @@ def test_gpu_check_skips_without_nvml_without_sleeping(monkeypatch: pytest.Monke
     assert idle is None
     assert any("NVML unavailable" in c for c in checks)
     assert sleeps == []
+
+
+def test_launch_flags_reads_both_spellings() -> None:
+    argv = ["vllm", "serve", "m", "--no-enable-prefix-caching", "--scheduling-policy", "priority"]
+    argv += ["--long-prefill-token-threshold=256"]
+    flags = env_check.launch_flags(argv)
+    assert flags["--scheduling-policy"] == "priority"
+    assert flags["--long-prefill-token-threshold"] == "256"
+    assert "--no-enable-prefix-caching" not in flags
+
+
+def test_remote_server_skips_the_launch_flags_check() -> None:
+    assert env_check.local_server_argv("http://gpu-vm:8000/v1") is None
+
+
+def check_flags(monkeypatch: pytest.MonkeyPatch, argv: list[str], **server: Any) -> Any:
+    async def clean(*args: Any, **kwargs: Any) -> tuple[float, float]:
+        return (0.030, 0.029)
+
+    monkeypatch.setattr(env_check, "_identical_prompt_ttfts", clean)
+    monkeypatch.setattr(env_check, "local_server_argv", lambda _endpoint: argv)
+
+    async def run() -> Any:
+        async with mock_client() as client:
+            return await check_server(make_cfg(kind="vllm", **server), client=client)
+
+    return asyncio.run(run())
+
+
+def test_server_flags_matching_the_config_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    argv = ["vllm", "serve", "m", "--scheduling-policy", "priority"]
+    argv += ["--long-prefill-token-threshold", "256"]
+    report = check_flags(
+        monkeypatch, argv, scheduling_policy="priority", long_prefill_token_threshold=256
+    )
+    assert "--scheduling-policy priority · --long-prefill-token-threshold 256" in report.checks
+
+
+def test_server_defaults_match_a_config_that_sets_neither(monkeypatch: pytest.MonkeyPatch) -> None:
+    report = check_flags(monkeypatch, ["vllm", "serve", "m"])
+    assert "--scheduling-policy fcfs · --long-prefill-token-threshold 0" in report.checks
+
+
+def test_server_flags_differing_from_the_config_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    argv = ["vllm", "serve", "m", "--long-prefill-token-threshold", "1024"]
+    with pytest.raises(EnvCheckError) as e:
+        check_flags(
+            monkeypatch, argv, scheduling_policy="priority", long_prefill_token_threshold=256
+        )
+    assert "--scheduling-policy fcfs (config wants priority)" in str(e.value)
+    assert "--long-prefill-token-threshold 1024 (config wants 256)" in str(e.value)
