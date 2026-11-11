@@ -30,6 +30,7 @@ from llmserve.metrics.records import CHUNK_SCHEMA, REQUEST_SCHEMA
 from llmserve.metrics.server import SERVER_SCHEMA
 from llmserve.mock import CbParams, ContinuousBatchEngine, DelayModel, MockEngine, create_app
 from llmserve.runner import experiment
+from llmserve.runner.env_check import EnvCheckError
 from llmserve.runner.experiment import DirtyTreeError, run_experiment
 from llmserve.runner.run import drive as real_drive
 from llmserve.workload.generator import load_workload, materialize, save_workload
@@ -55,6 +56,7 @@ METADATA_KEYS = (
     "child_seed_keys",
     "server",
     "backend_version",
+    "env_checks",
     "tokenizer_revision",
     "vllm_launch_args",
     "max_model_len",
@@ -480,6 +482,60 @@ def test_dirty_tree_refuses_without_allow_dirty(
     with pytest.raises(DirtyTreeError, match="dirty"):
         asyncio.run(run_experiment(make_cfg(), out_root=tmp_path, builder=make_builder()))
     assert list(tmp_path.iterdir()) == []  # nothing written before the gate
+
+
+def test_a_server_failing_the_env_check_starts_no_run(tmp_path: Path) -> None:
+    raw = make_cfg().canonical()
+    raw["server"]["model"] = "not-the-served-model"
+    with pytest.raises(EnvCheckError, match="not-the-served-model"):
+        run_in_process(ExperimentConfig.model_validate(raw), tmp_path, allow_dirty=True)
+    assert not (tmp_path / "results").exists()
+
+
+def test_metadata_records_what_the_env_check_verified(tmp_path: Path) -> None:
+    run_dir, _ = run_in_process(make_cfg(), tmp_path, allow_dirty=True)
+    md = json.loads((run_dir / "metadata.json").read_text())
+    assert "health ok" in md["env_checks"]
+    assert md["vllm_launch_args"] is None  # the mock is not a local vLLM
+
+
+class _Authorizations:
+    """ASGI wrapper recording the Authorization header of each `/v1/completions` request."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+        self.seen: list[str | None] = []
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "http" and scope["path"] == "/v1/completions":
+            headers = dict(scope["headers"])
+            value = headers.get(b"authorization")
+            self.seen.append(value.decode() if value else None)
+        await self.app(scope, receive, send)
+
+
+def test_the_runners_client_sends_the_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLMSERVE_TEST_KEY", "s3cret")
+    raw = make_cfg().canonical()
+    raw.update(repetitions=1)
+    raw["server"]["api_key_env"] = "LLMSERVE_TEST_KEY"
+    raw["load"].update(concurrency=2, requests=4)
+    raw["measurement"].update(warmup={"requests": 0}, samplers={"gpu_hz": 0, "server_hz": 0})
+    server = _Authorizations(create_app(MockEngine(delay=DelayModel.instant())))
+    with served_over_tcp(server) as base:
+        asyncio.run(
+            run_experiment(
+                ExperimentConfig.model_validate(raw),
+                out_root=tmp_path / "results",
+                endpoint=f"{base}/v1",
+                builder=make_builder(),
+                allow_dirty=True,
+            )
+        )
+    assert len(server.seen) >= 4
+    assert set(server.seen) == {"Bearer s3cret"}
 
 
 def test_clean_tree_writes_with_the_recorded_sha(

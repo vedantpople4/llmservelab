@@ -43,6 +43,7 @@ from typing import Any, Literal
 import httpx
 
 from llmserve.analysis.aggregate import aggregate, summarize, window_of
+from llmserve.client.auth import auth_headers
 from llmserve.client.capabilities import Capabilities, capabilities
 from llmserve.config import schema
 from llmserve.config.loader import config_hash
@@ -52,7 +53,12 @@ from llmserve.metrics.gpu import GpuSampler
 from llmserve.metrics.server import ServerSampler, describe, lookup, parse_prometheus
 from llmserve.runner import macos, storage
 from llmserve.runner.clock import RunClock
-from llmserve.runner.env_check import GPU_IDLE_UTIL_PCT, base_url, settled_gpu_utilization
+from llmserve.runner.env_check import (
+    GPU_IDLE_UTIL_PCT,
+    base_url,
+    check_server,
+    settled_gpu_utilization,
+)
 from llmserve.runner.metadata import build_metadata, git_state
 from llmserve.runner.run import drive
 from llmserve.workload.generator import materialize, save_workload
@@ -96,6 +102,7 @@ async def run_experiment(
             f"working tree is dirty (git {sha or 'unknown'}); commit, or pass --allow-dirty"
         )
 
+    env = await check_server(cfg, endpoint=endpoint, client=client)
     builder = builder or PromptBuilder.default()
     caps = capabilities(cfg.server.kind)
     token_counter = None if caps.token_id_prompts else _token_counter(builder)
@@ -113,6 +120,7 @@ async def run_experiment(
         f"{cfg.load.mode} load · {cfg.repetitions} rep(s) · seed {cfg.seed} · "
         f"git {sha or 'unknown'}{' (dirty)' if dirty else ''}"
     )
+    progress(f"env check ok: {env.summary}")
     for line in _startup_lines():
         progress(line)
 
@@ -121,7 +129,8 @@ async def run_experiment(
         # The load sets concurrency; httpx's default 100-connection pool would silently cap it.
         # Per-request timeouts (`request_timeout_s`) still bound each request.
         client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=None, max_keepalive_connections=None)
+            limits=httpx.Limits(max_connections=None, max_keepalive_connections=None),
+            headers=auth_headers(cfg.server),
         )
         owned.append(client)
     if metrics_client is None:
@@ -234,6 +243,8 @@ async def run_experiment(
                 finished_utc=datetime.now(UTC).isoformat(),
                 warmup=warmup,
                 backend_version=await _backend_version(client, target, caps),
+                env_checks=list(env.checks),
+                launch_args=list(env.launch_args) if env.launch_args else None,
                 samplers={
                     "active": samplers.active,  # started at least once; wanted-but-absent -> errors
                     "gpu_hz": cfg.measurement.samplers.gpu_hz,
