@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -233,8 +234,10 @@ def test_paired_compares_each_run_with_the_baseline_at_its_seed(
             )
         )
         points.append((f"{policy}-s{seed - 42}", None, run, "done"))
-    (rep,) = points[0][2].rep_dirs()
-    storage.write_power(rep / "power.parquet", [power_sample(1, 10.0), power_sample(2, 10.0)])
+    for (_, _, run, _), mhz in zip(points[:2], (1030.0, 1000.0), strict=True):
+        (rep,) = run.rep_dirs()
+        samples = [replace(power_sample(t, 10.0), gpu_freq_mhz=mhz) for t in (1, 2)]
+        storage.write_power(rep / "power.parquet", samples)
     write_manifest(root, "waas-paired", None, points)
     suite = load_suite_runs(root, "waas-paired")
     assert suite is not None
@@ -252,4 +255,6 @@ def test_paired_compares_each_run_with_the_baseline_at_its_seed(
     assert table["diff"].iloc[0] == 0.0
     assert table["diff"].iloc[1] == pytest.approx(p95[42, "spf"] - p95[42, "fifo"])
     assert np.isnan(table["diff"].iloc[2])  # no FIFO run at seed 43
-    assert table["gpu_mhz"].iloc[1] == 1000.0 and np.isnan(table["gpu_mhz"].iloc[0])
+    assert list(table["gpu_mhz"].iloc[:2]) == [1000.0, 1030.0]
+    assert list(table["mhz_gap"].iloc[:2]) == [0.0, 30.0]
+    assert np.isnan(table["mhz_gap"].iloc[2])

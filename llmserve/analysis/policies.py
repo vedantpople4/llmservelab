@@ -166,11 +166,16 @@ def _gpu_mhz(run: Run) -> float:
     return power.gpu_freq_mhz if power else float("nan")
 
 
+# The fanless Air's sustained GPU clock varies ~890 to 1100 MHz run to run, enough to move a
+# ρ 0.95 tail several-fold. Pairs further apart than this are not compared like for like.
+MATCHED_MHZ = 15.0
+
+
 def paired(suite: SuiteRuns, baseline: str, cls: str, q: float = 95.0) -> pd.DataFrame:
     """Per run: ρ, seed, policy, its mean GPU clock, `cls` TTFT `pct_q` over its measured
-    requests, and that minus the `baseline` run's at the same ρ and seed (NaN without one).
-    A paired suite runs a seed's policies back to back, so each difference compares runs on a
-    similar machine state; the clock column shows how similar."""
+    requests, and both the TTFT and the clock minus the `baseline` run's at the same ρ and seed
+    (NaN without one). A paired suite runs a seed's policies back to back so each difference
+    compares runs on a similar machine state; `mhz_gap` says how similar."""
     rows = []
     for cell in cells(suite):
         frame = measured(cell.run)
@@ -187,9 +192,10 @@ def paired(suite: SuiteRuns, baseline: str, cls: str, q: float = 95.0) -> pd.Dat
     frame = pd.DataFrame(rows)
     if frame.empty:
         return frame
-    base = frame[frame["policy"] == baseline].set_index(["rho", "seed"])["ttft"]
+    base = frame[frame["policy"] == baseline].set_index(["rho", "seed"])
     keys = pd.MultiIndex.from_frame(frame[["rho", "seed"]])
-    frame["diff"] = frame["ttft"].to_numpy() - base.reindex(keys).to_numpy()
+    frame["diff"] = frame["ttft"].to_numpy() - base["ttft"].reindex(keys).to_numpy()
+    frame["mhz_gap"] = frame["gpu_mhz"].to_numpy() - base["gpu_mhz"].reindex(keys).to_numpy()
     ordered = frame.assign(_rank=frame["policy"].map(_policy_rank))
     return (
         ordered.sort_values(["rho", "seed", "_rank"]).drop(columns="_rank").reset_index(drop=True)

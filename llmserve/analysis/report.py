@@ -47,6 +47,7 @@ from llmserve.analysis.hypotheses import (
     prefill_points,
 )
 from llmserve.analysis.policies import (
+    MATCHED_MHZ,
     THRESHOLD_TAG,
     against_baseline,
     choose_cap,
@@ -950,15 +951,17 @@ def _paired_table(runs: pd.DataFrame, baseline: str) -> list[str]:
         return []
     lines = [
         f"Interactive TTFT P95 per run, and its difference from `{baseline}` at the same ρ and "
-        "seed:",
+        f"seed. † marks a pair whose GPU clocks differ by more than {MATCHED_MHZ:.0f} MHz, "
+        "where the clock may explain the difference:",
         "",
-        f"| ρ | Seed | Policy | GPU MHz | P95 (s) | Δ vs `{baseline}` (s) |",
-        "|---|---|---|---|---|---|",
+        f"| ρ | Seed | Policy | GPU MHz | Δ MHz | P95 (s) | Δ vs `{baseline}` (s) |",
+        "|---|---|---|---|---|---|---|",
     ]
     for row in runs.itertuples():
+        mark = " †" if abs(row.mhz_gap) > MATCHED_MHZ else ""
         lines.append(
             f"| {row.rho:g} | {row.seed} | {row.policy} | {_num(row.gpu_mhz, '.0f')} "
-            f"| {row.ttft:.1f} | {_num(row.diff, '+.1f')} |"
+            f"| {_num(row.mhz_gap, '+.0f')}{mark} | {row.ttft:.1f} | {_num(row.diff, '+.1f')} |"
         )
     return [*lines, ""]
 
