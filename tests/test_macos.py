@@ -160,7 +160,8 @@ def test_metadata_attributes_sleep_to_the_rep_it_happened_in(
 
     monkeypatch.setattr(macos, "_read_clocks", read_clocks)
     monkeypatch.setattr(experiment, "drive", drive)
-    sources = iter(["AC Power", "Battery Power"])
+    # The env check reads the source once before the run takes its start reading.
+    sources = iter(["AC Power", "AC Power", "Battery Power"])
     monkeypatch.setattr(macos, "power_source", lambda: next(sources, "AC Power"))
     monkeypatch.setattr(experiment, "POWER_POLL_S", 3600.0)
 
