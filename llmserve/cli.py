@@ -206,6 +206,60 @@ def _add_benchmark_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _regress(
+    path: str, *, baseline: str, update: bool, out: str, endpoint: str | None, allow_dirty: bool
+) -> int:
+    """Run the standard workload and compare it with the stored baseline (plan Phase 7 item 6)."""
+    import asyncio
+
+    from llmserve.analysis.regress import TOLERANCE, Baseline, compare, headline
+    from llmserve.config.loader import config_hash
+    from llmserve.runner.experiment import DirtyTreeError, run_experiment
+
+    try:
+        cfg = load_config(path)
+    except (ValidationError, ValueError, OSError) as e:
+        print(f"FAIL {path}\n{e}", file=sys.stderr)
+        return 2
+    stored = Path(baseline)
+    want = config_hash(cfg)
+    if stored.is_file() and not update and Baseline.load(stored).config_hash != want:
+        print(
+            f"FAIL {stored} was taken with a different config; rerun with --update", file=sys.stderr
+        )
+        return 2
+    try:
+        run_dir, summary = asyncio.run(
+            run_experiment(
+                cfg, out_root=Path(out), endpoint=endpoint, allow_dirty=allow_dirty, progress=print
+            )
+        )
+    except DirtyTreeError as e:
+        print(f"FAIL {e}", file=sys.stderr)
+        return 2
+    if summary["invalid"]:
+        print(f"FAIL {run_dir} is invalid; no comparison", file=sys.stderr)
+        return 1
+    current = headline(summary)
+    if update or not stored.is_file():
+        Baseline(want, run_dir.name, current).save(stored)
+        print(f"ok   baseline written to {stored} from {run_dir.name}")
+        return 0
+    changes = compare(Baseline.load(stored).metrics, current)
+    print(f"{'metric':<20} {'baseline':>10} {'now':>10} {'change':>8}")
+    for c in changes:
+        mark = "  REGRESSED" if c.flagged else ""
+        print(f"{c.metric:<20} {c.baseline:>10.4g} {c.current:>10.4g} {c.relative:>+8.1%}{mark}")
+    flagged = [c.metric for c in changes if c.flagged]
+    if flagged:
+        print(
+            f"FAIL {len(flagged)} metric(s) moved more than {TOLERANCE:.0%}: {', '.join(flagged)}"
+        )
+        return 1
+    print(f"ok   every metric within {TOLERANCE:.0%} of {stored}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="llmserve")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -239,6 +293,21 @@ def main(argv: list[str] | None = None) -> None:
     suite.add_argument(
         "--plan", action="store_true", help="list points and duration estimates; run nothing"
     )
+    regress = sub.add_parser(
+        "regress", help="run the standard workload and flag metrics that moved > 10%%"
+    )
+    regress.add_argument(
+        "path", nargs="?", default="configs/regress/standard.yaml", help="standard workload config"
+    )
+    regress.add_argument(
+        "--baseline",
+        default="configs/regress/standard.baseline.json",
+        help="stored baseline (written when missing)",
+    )
+    regress.add_argument(
+        "--update", action="store_true", help="replace the baseline with this run's metrics"
+    )
+    _add_benchmark_flags(regress)
     analyze = sub.add_parser("analyze", help="describe one run directory")
     analyze.add_argument("path", help="results/<experiment>/<run_id>")
     trace = sub.add_parser("trace", help="print one request's timeline")
@@ -282,6 +351,17 @@ def main(argv: list[str] | None = None) -> None:
                 only=args.only,
                 sets=args.sets,
                 plan=args.plan,
+            )
+        )
+    if args.command == "regress":
+        raise SystemExit(
+            _regress(
+                args.path,
+                baseline=args.baseline,
+                update=args.update,
+                out=args.out,
+                endpoint=args.endpoint,
+                allow_dirty=args.allow_dirty,
             )
         )
     if args.command == "analyze":
