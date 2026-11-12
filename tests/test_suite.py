@@ -59,6 +59,7 @@ CONTRACT_SUITES = {
     "threshold-paired",
     "eval-mixed",
     "xcheck-paired",
+    "xcheck-control",
     "dev-concurrency",
     "dev-prompt-length",
 }
