@@ -6,14 +6,19 @@ vllm-metal 0.31.0 and Qwen2.5-7B-Instruct-AWQ. Every point uses E07's mixed work
 gateway with an in-flight cap of 16.
 
 The numbers come from `llmserve report` (sections "Long-prefill threshold", "WAAS tuning" and
-the H5 verdict) over the suites `threshold-paired`, `waas-paired` and `eval-mixed`. TTFT is the
-interactive class's P95 unless stated otherwise.
+the H5 verdict) over the suites `threshold-paired`, `waas-paired` and `eval-mixed`, and from
+`analysis.policies` over `xcheck-paired` and `xcheck-control`. TTFT is the interactive class's
+P95 unless stated otherwise.
 
 ## Short answer
 
 Setting vLLM's `--long-prefill-token-threshold 256` removes most of the interactive tail. On
 that server, WAAS (cost_weight 2, max_bypass 32) does not beat FIFO on held-out seeds. H5 is
 inconclusive. At ρ 0.95 the P95 change is −0.49 s, with a 95% CI of −4.28 to +2.13 s.
+
+On the same server, sending requests straight to vLLM with no gateway beats every gateway
+ordering tried, on every class, at equal throughput. The gain comes from removing the gateway's
+in-flight cap of 16, not from vLLM's priority scheduling, which adds nothing over FCFS.
 
 ## The GPU clock confound
 
@@ -86,6 +91,43 @@ lost, by 1.2 s and 2.2 s, with long-context P95 14 to 23 s worse in the same run
 no clock adjustment, so it counts. The worst gateway wait rose from 7.0 s to 10.5 s at ρ 0.85
 and from 39 s to 49 s at ρ 0.95.
 
+## Gateway against no gateway (`xcheck-paired`, `xcheck-control`)
+
+Threshold 256, ρ 0.85 and 0.95, tuning seeds 42 to 44. `xcheck-paired` runs gateway FIFO and
+SPF (in-flight cap 16, FCFS server) and vLLM's native priority with no gateway
+(`--scheduling-policy priority`), each seed's blocks back to back. `xcheck-control` adds no
+gateway on a FCFS server, run a day later. P95 TTFT, pooled over seeds:
+
+| ρ | Setup | Interactive | Generation-heavy | Long-context | Generated tok/s |
+|---|---|---|---|---|---|
+| 0.85 | Gateway FIFO | 15.6 s | 4.6 s | 38.7 s | 26.5 |
+| 0.85 | Gateway SPF | 6.7 s | 4.0 s | 39.7 s | 27.0 |
+| 0.85 | No gateway, priority | 5.1 s | 3.9 s | 36.6 s | 27.0 |
+| 0.85 | No gateway, FCFS | 4.7 s | 4.4 s | 34.1 s | 25.7 |
+| 0.95 | Gateway FIFO | 51.5 s | 49.8 s | 67.6 s | 28.4 |
+| 0.95 | Gateway SPF | 28.4 s | 10.5 s | 69.9 s | 29.0 |
+| 0.95 | No gateway, priority | 5.8 s | 4.9 s | 40.9 s | 29.7 |
+| 0.95 | No gateway, FCFS | 5.8 s | 4.6 s | 35.5 s | 28.6 |
+
+- **The cap is the cost.** Without a gateway, vLLM batches every arrival and nothing waits in
+  front of it. With the cap, requests queued up to 35 s (ρ 0.85) and 96 s (ρ 0.95) at the
+  gateway under FIFO. At clock-matched pairs, no gateway on FCFS against gateway FIFO is 5.6 s
+  against 17.2 s (ρ 0.85, seed 44, 1003 / 1023 MHz) and 4.2 s against 16.5 s (ρ 0.95, seed 43,
+  1065 / 1059 MHz).
+- **Priority adds nothing.** Per run, no gateway on FCFS and on priority are within 1 s on
+  interactive P95 except where clocks differ, for example 4.2 s against 4.8 s at ρ 0.95 seed 43
+  (1065 / 1070 MHz).
+- **Throughput is flat** across all four setups (25.7 to 29.7 generated tok/s), and no setup
+  improved one class at another's expense.
+- `xcheck-control` ran on a different day from `xcheck-paired`, so its comparisons are across
+  sessions. Its clocks (996 to 1103 MHz) sit at or above the other runs', so seed-level
+  comparisons above use pairs within about 20 MHz.
+
+The cap of 16 was chosen in Phase 5 (`inflight-cap`) on a server without the threshold, as the
+smallest cap keeping 95% of uncapped throughput. On a threshold server it still costs no
+throughput to remove, and it makes the tail it was meant to shape. Admission ordering only
+helped because the cap created a queue to order.
+
 ## What it means
 
 The tail WAAS was designed against came mostly from long prefills inside vLLM (ADR-0014,
@@ -96,6 +138,9 @@ whose FIFO tail is long, and it costs longer worst-case waits.
 
 ## Open questions
 
+- **The cap on a threshold server.** A cap sweep with the threshold set (for example 16, 32,
+  64 and none) would show whether any cap keeps a queue worth ordering without the tail cost.
+  If none does, the gateway's role on this platform is overload protection, not ordering.
 - **WAAS without the threshold.** WAAS against FIFO on an unset server would show whether
   gateway ordering alone recovers the tail. It would not count toward H5.
 - **The clock-threshold link.** A run that logs GPU clock per engine step under both
