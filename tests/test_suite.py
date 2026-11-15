@@ -61,6 +61,7 @@ CONTRACT_SUITES = {
     "xcheck-paired",
     "xcheck-control",
     "cap-paired",
+    "overload-mixed",
     "dev-concurrency",
     "dev-prompt-length",
 }
