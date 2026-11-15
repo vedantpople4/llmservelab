@@ -7,7 +7,7 @@ gateway with an in-flight cap of 16.
 
 The numbers come from `llmserve report` (sections "Long-prefill threshold", "WAAS tuning" and
 the H5 verdict) over the suites `threshold-paired`, `waas-paired` and `eval-mixed`, and from
-`analysis.policies` over `xcheck-paired` and `xcheck-control`. TTFT is the interactive class's
+`analysis.policies` over `xcheck-paired`, `xcheck-control` and `cap-paired`. TTFT is the interactive class's
 P95 unless stated otherwise.
 
 ## Short answer
@@ -18,7 +18,8 @@ inconclusive. At ρ 0.95 the P95 change is −0.49 s, with a 95% CI of −4.28 t
 
 On the same server, sending requests straight to vLLM with no gateway beats every gateway
 ordering tried, on every class, at equal throughput. The gain comes from removing the gateway's
-in-flight cap of 16, not from vLLM's priority scheduling, which adds nothing over FCFS.
+in-flight cap of 16, not from vLLM's priority scheduling, which adds nothing over FCFS. At
+ρ 0.95 a cap of 32 or more never fills, so the gateway has no queue to order.
 
 ## The GPU clock confound
 
@@ -128,6 +129,35 @@ smallest cap keeping 95% of uncapped throughput. On a threshold server it still 
 throughput to remove, and it makes the tail it was meant to shape. Admission ordering only
 helped because the cap created a queue to order.
 
+## In-flight cap on a threshold server (`cap-paired`)
+
+Gateway FIFO, threshold 256, ρ 0.95, caps 16, 32, 64 and 256 (vLLM's `--max-num-seqs`, so
+uncapped). Seeds 42 and 43 each run their four caps back to back on one server, in alternating
+order. Per run:
+
+| Seed | Cap | GPU MHz | Interactive | Generation-heavy | Long-context | Generated tok/s | Max gateway wait |
+|---|---|---|---|---|---|---|---|
+| 42 | 16 | 1087 | 10.8 s | 3.1 s | 37.9 s | 28.1 | 23.3 s |
+| 42 | 32 | 1031 | 4.5 s | 2.0 s | 35.2 s | 28.1 | 0.0 s |
+| 42 | 64 | 889 | 8.4 s | 6.5 s | 47.8 s | 25.5 | 0.0 s |
+| 42 | 256 | 932 | 5.1 s | 3.5 s | 43.3 s | 28.5 | 0.0 s |
+| 43 | 16 | 963 | 37.1 s | 43.9 s | 53.2 s | 28.6 | 44.8 s |
+| 43 | 32 | 970 | 5.4 s | 6.8 s | 44.4 s | 30.5 | 0.0 s |
+| 43 | 64 | 958 | 5.3 s | 6.8 s | 44.8 s | 28.4 | 0.0 s |
+| 43 | 256 | 964 | 5.4 s | 7.7 s | 45.1 s | 30.5 | 0.0 s |
+
+- **Only cap 16 queues.** At 32 and above no request waited at the gateway, so those runs are
+  the same as no gateway, and their interactive P95 (4.5 to 5.4 s) matches `xcheck-control`.
+- **Cap 16 is the tail.** Seed 43's clocks are matched (958 to 970 MHz), and cap 16 is 37.1 s
+  against 5.3 to 5.4 s. On seed 42 cap 16 had the fastest clock and was still the worst run.
+  Seed 42's cap 64 run had the slowest clock (889 MHz) and the next-worst tail.
+- **Throughput does not depend on the cap** above 16 (25.5 to 30.5 tok/s, tracking the clock).
+
+So at ρ 0.95 on this server, vLLM never holds more than 32 of these requests at once. A cap
+that leaves room for that has nothing to queue and nothing for an admission order to act on,
+and a cap that doesn't adds a gateway wait that dominates the tail. Gateway ordering can only
+matter in sustained overload (ρ > 1), where some queue is unavoidable.
+
 ## What it means
 
 The tail WAAS was designed against came mostly from long prefills inside vLLM (ADR-0014,
@@ -138,9 +168,8 @@ whose FIFO tail is long, and it costs longer worst-case waits.
 
 ## Open questions
 
-- **The cap on a threshold server.** A cap sweep with the threshold set (for example 16, 32,
-  64 and none) would show whether any cap keeps a queue worth ordering without the tail cost.
-  If none does, the gateway's role on this platform is overload protection, not ordering.
+- **Overload.** At ρ > 1 a queue forms whatever the cap. Whether WAAS beats FIFO there, and
+  whether that queue belongs in the gateway or in vLLM, is the remaining case for ordering.
 - **WAAS without the threshold.** WAAS against FIFO on an unset server would show whether
   gateway ordering alone recovers the tail. It would not count toward H5.
 - **The clock-threshold link.** A run that logs GPU clock per engine step under both
