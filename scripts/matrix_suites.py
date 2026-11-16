@@ -524,7 +524,10 @@ def overload_mixed(max_in_flight: int) -> dict[str, Any]:
     }
 
 
-KV_LEVELS = (0.5, 0.3, 0.4)
+# vllm-metal sizes the pool as this fraction of the Metal limit (19.07 GB) minus the model and
+# overhead (6.51 GB): 0.5, 0.45 and 0.4 give 52,784, 36,160 and 19,536 KV tokens. 0.3 leaves a
+# negative budget and the engine refuses to start; 0.4 still fits two 10,240-token requests.
+KV_LEVELS = (0.5, 0.4, 0.45)
 KV_LONG_SHARES = (0.25, 0.40)
 KV_SEEDS = 2
 KV_RHO = 0.95
