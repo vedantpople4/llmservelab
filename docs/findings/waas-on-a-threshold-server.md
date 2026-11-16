@@ -7,10 +7,14 @@ gateway with an in-flight cap of 16.
 
 The numbers come from `llmserve report` (sections "Long-prefill threshold", "WAAS tuning" and
 the H5 verdict) over the suites `threshold-paired`, `waas-paired` and `eval-mixed`, and from
-`analysis.policies` over `xcheck-paired`, `xcheck-control` and `cap-paired`. TTFT is the interactive class's
+`analysis.policies` over `xcheck-paired`, `xcheck-control`, `cap-paired` and `overload-mixed`. TTFT is the interactive class's
 P95 unless stated otherwise.
 
 ## Short answer
+
+No gateway ordering beat sending requests straight to a threshold server below capacity, and
+WAAS does not help there. Past capacity WAAS shortens the interactive tail only by starving
+generation-heavy requests.
 
 Setting vLLM's `--long-prefill-token-threshold 256` removes most of the interactive tail. On
 that server, WAAS (cost_weight 2, max_bypass 32) does not beat FIFO on held-out seeds. H5 is
@@ -20,6 +24,10 @@ On the same server, sending requests straight to vLLM with no gateway beats ever
 ordering tried, on every class, at equal throughput. The gain comes from removing the gateway's
 in-flight cap of 16, not from vLLM's priority scheduling, which adds nothing over FCFS. At
 ρ 0.95 a cap of 32 or more never fills, so the gateway has no queue to order.
+
+Past capacity (`overload-mixed`, ρ 1.2), the one clock-matched seed shows WAAS cutting
+interactive P95 from 39 s to 24 s against gateway FIFO and no gateway, while generation-heavy
+P95 rises from 18 to 38 s to 155 s. At ρ 1.05 nothing queued at the gateway.
 
 ## The GPU clock confound
 
@@ -158,6 +166,51 @@ that leaves room for that has nothing to queue and nothing for an admission orde
 and a cap that doesn't adds a gateway wait that dominates the tail. Gateway ordering can only
 matter in sustained overload (ρ > 1), where some queue is unavoidable.
 
+## Overload (`overload-mixed`)
+
+Gateway FIFO and WAAS (cost_weight 2, max_bypass 32), both at in-flight cap 32, against no
+gateway on a FCFS server. Threshold 256, ρ 1.05 and 1.2 against the pre-threshold capacity
+estimate (0.15 req/s), held-out seeds 1000 and 1001. Each seed and ρ runs its three setups back
+to back in alternating order. Per run, P95 TTFT:
+
+| ρ | Seed | Setup | GPU MHz | Interactive | Generation-heavy | Long-context | Generated tok/s | Max gateway wait |
+|---|---|---|---|---|---|---|---|---|
+| 1.05 | 1000 | FIFO | 1134 | 5.0 s | 4.4 s | 43.1 s | 28.5 | 0.0 s |
+| 1.05 | 1000 | WAAS | 1065 | 6.4 s | 5.3 s | 45.0 s | 28.7 | 0.0 s |
+| 1.05 | 1000 | No gateway | 872 | 11.2 s | 9.0 s | 70.4 s | 24.2 | 0.0 s |
+| 1.05 | 1001 | FIFO | 1033 | 5.1 s | 3.8 s | 35.9 s | 35.3 | 0.0 s |
+| 1.05 | 1001 | WAAS | 1041 | 5.3 s | 3.2 s | 35.8 s | 35.3 | 0.0 s |
+| 1.05 | 1001 | No gateway | 1068 | 4.6 s | 3.2 s | 32.2 s | 36.8 | 0.0 s |
+| 1.2 | 1000 | FIFO | 1167 | 5.8 s | 5.0 s | 42.5 s | 31.2 | 2.1 s |
+| 1.2 | 1000 | WAAS | 983 | 38.6 s | 204.8 s | 78.9 s | 24.5 | 204.5 s |
+| 1.2 | 1000 | No gateway | 831 | 197.4 s | 193.2 s | 307.7 s | 15.3 | 0.0 s |
+| 1.2 | 1001 | FIFO | 1019 | 39.4 s | 37.8 s | 56.6 s | 33.3 | 39.6 s |
+| 1.2 | 1001 | WAAS | 1012 | 23.5 s | 154.7 s | 61.8 s | 33.3 | 166.2 s |
+| 1.2 | 1001 | No gateway | 1008 | 38.7 s | 17.6 s | 81.7 s | 33.3 | 0.0 s |
+
+All requests completed in every run.
+
+- **ρ 1.05 is not overload.** The cap of 32 never filled, so the gateway setups match no
+  gateway. On seed 1001 (1033 to 1068 MHz) all three are within 0.7 s on interactive P95. The
+  capacity estimate predates the threshold, and the server now keeps up at this rate.
+- **At ρ 1.2 WAAS trades classes.** Seed 1001 is matched (1008 to 1019 MHz) and throughput is
+  identical. WAAS cuts interactive P95 by 16 s against both other setups and raises
+  generation-heavy P95 to 155 s, against 38 s under FIFO and 18 s with no gateway. The worst
+  gateway wait rises from 40 s to 166 s. max_bypass 32 bounds how often a request is passed
+  over, not how long it waits, and past capacity 32 bypasses add up to minutes.
+- **No gateway against gateway FIFO** at ρ 1.2 seed 1001 ties on interactive (38.7 against
+  39.4 s), is better on generation-heavy (17.6 against 37.8 s) and worse on long-context (81.7
+  against 56.6 s). Holding the queue in vLLM rather than the gateway moves the tail between
+  classes without shrinking it.
+- **Seed 1000 at ρ 1.2 is confounded.** Its three runs span 831 to 1167 MHz, and the tail
+  tracks the clock: the slowest run (no gateway) fell to 15.3 tok/s and a 197 s interactive
+  P95, while the fastest (FIFO) barely queued. At ρ 1.2 a 30% clock drop pushes effective load
+  far past capacity, so this seed says nothing about the setups.
+
+With one clean seed per ρ, these are observations, not a test. They do not show a free win
+for WAAS past capacity: its interactive gain is paid for by a generation-heavy tail four to
+nine times longer.
+
 ## What it means
 
 The tail WAAS was designed against came mostly from long prefills inside vLLM (ADR-0014,
@@ -168,8 +221,9 @@ whose FIFO tail is long, and it costs longer worst-case waits.
 
 ## Open questions
 
-- **Overload.** At ρ > 1 a queue forms whatever the cap. Whether WAAS beats FIFO there, and
-  whether that queue belongs in the gateway or in vLLM, is the remaining case for ordering.
+- **Overload with an aging bound.** A WAAS variant that bounds wait time rather than bypass
+  count might keep the interactive gain at ρ 1.2 without starving generation-heavy requests.
+  More matched seeds would be needed to tell.
 - **WAAS without the threshold.** WAAS against FIFO on an unset server would show whether
   gateway ordering alone recovers the tail. It would not count toward H5.
 - **The clock-threshold link.** A run that logs GPU clock per engine step under both
