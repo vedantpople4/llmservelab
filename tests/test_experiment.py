@@ -672,3 +672,14 @@ def test_long_prefill_threshold_stays_out_of_the_hash_unless_set() -> None:
     )
     assert on.canonical()["server"]["long_prefill_token_threshold"] == 256
     assert config_hash(on) != config_hash(off)
+
+
+def test_gpu_memory_utilization_stays_out_of_the_hash_unless_set() -> None:
+    cfg = make_cfg()
+    off = cfg.model_copy(update={"server": cfg.server.model_copy(update={"kind": "vllm-metal"})})
+    assert "gpu_memory_utilization" not in off.canonical()["server"]
+    on = off.model_copy(
+        update={"server": off.server.model_copy(update={"gpu_memory_utilization": 0.3})}
+    )
+    assert on.canonical()["server"]["gpu_memory_utilization"] == 0.3
+    assert config_hash(on) != config_hash(off)

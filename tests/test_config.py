@@ -108,6 +108,7 @@ def test_open_loop_with_rho() -> None:
         ({"server.scheduling_policy": "priority"}, "vLLM feature"),  # the mock has no policy
         ({"server.long_prefill_token_threshold": 256}, "vLLM feature"),
         ({"server.long_prefill_token_threshold": -1}, "greater than or equal"),
+        ({"server.gpu_memory_utilization": 0.5}, "vLLM feature"),
         ({"gateway": {"scheduler": {"name": "fifo2"}}}, "unknown scheduler"),
         (
             {"gateway": {"enabled": True, "scheduler": {"name": "sjf", "params": {"bach": 8}}}},

@@ -291,6 +291,16 @@ def _check_launch_flags(
         for flag, value in want.items()
         if flags.get(flag, defaults[flag]) != value
     ]
+    if (memory := cfg.server.gpu_memory_utilization) is not None:
+        flag = "--gpu-memory-utilization"
+        want[flag] = f"{memory:g}"
+        got = flags.get(flag, "0.9")
+        try:
+            same = float(got) == memory
+        except ValueError:
+            same = False
+        if not same:
+            wrong.append(f"{flag} {got} (config wants {memory:g})")
     if wrong:
         failures.append("server launched with " + ", ".join(wrong))
     else:

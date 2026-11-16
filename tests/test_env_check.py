@@ -321,3 +321,13 @@ def test_server_flags_differing_from_the_config_fail(monkeypatch: pytest.MonkeyP
         )
     assert "--scheduling-policy fcfs (config wants priority)" in str(e.value)
     assert "--long-prefill-token-threshold 1024 (config wants 256)" in str(e.value)
+
+
+def test_declared_gpu_memory_utilization_is_checked(monkeypatch: pytest.MonkeyPatch) -> None:
+    argv = ["vllm", "serve", "m", "--gpu-memory-utilization", "0.30"]
+    report = check_flags(monkeypatch, argv, gpu_memory_utilization=0.3)
+    assert any(c.endswith("--gpu-memory-utilization 0.3") for c in report.checks)
+    with pytest.raises(EnvCheckError, match=r"--gpu-memory-utilization 0.30 \(config wants 0.4\)"):
+        check_flags(monkeypatch, argv, gpu_memory_utilization=0.4)
+    with pytest.raises(EnvCheckError, match=r"--gpu-memory-utilization 0.9 \(config wants 0.3\)"):
+        check_flags(monkeypatch, ["vllm", "serve", "m"], gpu_memory_utilization=0.3)
