@@ -95,6 +95,13 @@ class SLO(_Model):
     tpot_ms: PositiveFloat | None = None
 
 
+class TraceMatch(_Model):
+    """Which trace requests a class takes: those with at least these token counts."""
+
+    prompt_min: PositiveInt | None = None
+    output_min: PositiveInt | None = None
+
+
 class WorkloadClass(_Model):
     name: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*$")]
     weight: PositiveFloat = 1.0
@@ -102,10 +109,16 @@ class WorkloadClass(_Model):
     slo: SLO = SLO()
     prompt: LengthDistribution
     output: LengthDistribution
+    # With `workload.trace`, a request takes the first class, in list order, whose match it
+    # meets; weight, prompt and output are then unused.
+    match: TraceMatch | None = None
 
 
 class Workload(_Model):
     classes: Annotated[list[WorkloadClass], Field(min_length=1)]
+    # A trace file (`llmserve.workload.trace`) supplying every request's prompt and output
+    # length. The load must replay the same file for arrivals.
+    trace: str | None = None
 
     @field_validator("classes")
     @classmethod
@@ -114,6 +127,14 @@ class Workload(_Model):
         if len(names) != len(set(names)):
             raise ValueError(f"duplicate workload class names: {names}")
         return v
+
+    @model_validator(mode="after")
+    def _trace_catch_all(self) -> Self:
+        if self.trace is not None and self.classes[-1].match is not None:
+            raise ValueError("with workload.trace the last class must have no match (catch-all)")
+        if self.trace is None and any(c.match is not None for c in self.classes):
+            raise ValueError("a class match applies only with workload.trace")
+        return self
 
 
 # --- Arrival processes (PRD §9) ---
@@ -293,6 +314,15 @@ class ExperimentConfig(_Model):
     measurement: Measurement = Measurement()
 
     @model_validator(mode="after")
+    def _trace_replays_itself(self) -> Self:
+        trace = self.workload.trace
+        if trace is not None and not (
+            isinstance(self.load.arrival, Replay) and self.load.arrival.trace == trace
+        ):
+            raise ValueError("workload.trace needs load.arrival to replay the same file")
+        return self
+
+    @model_validator(mode="after")
     def _scheduler_needs_gateway(self) -> Self:
         if not self.gateway.enabled and self.gateway.scheduler.name != "fifo":
             raise ValueError(
@@ -304,7 +334,8 @@ class ExperimentConfig(_Model):
         """JSON-compatible dump with every default filled in; the input to `config_hash`.
 
         `measurement.rep_cooldown`, `server.long_prefill_token_threshold`,
-        `server.gpu_memory_utilization` and `gateway.output_prior` appear only when set, so
+        `server.gpu_memory_utilization`, `gateway.output_prior`, `workload.trace` and each
+        class's `match` appear only when set, so
         configs written before they existed keep their hashes and suites keep skipping their
         finished points."""
         dump = self.model_dump(mode="json")
@@ -316,4 +347,9 @@ class ExperimentConfig(_Model):
             del dump["server"]["gpu_memory_utilization"]
         if self.gateway.output_prior is None:
             del dump["gateway"]["output_prior"]
+        if self.workload.trace is None:
+            del dump["workload"]["trace"]
+        for cls in dump["workload"]["classes"]:
+            if cls["match"] is None:
+                del cls["match"]
         return dump

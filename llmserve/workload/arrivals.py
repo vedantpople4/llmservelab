@@ -11,8 +11,8 @@ Process conventions:
 - `bursty`: each phase is an independent homogeneous Poisson process on its window; the
   phases must cover `duration_s`, because the run would otherwise idle past the last phase.
 - `replay`: offsets read from a text file (one non-decreasing offset per line, `#` comments),
-  divided by `time_scale`. `time_scale` is a speed-up factor: 2.0 arrives twice as fast and
-  doubles rho.
+  or the `offset_s` column of a trace CSV (`llmserve.workload.trace`), divided by
+  `time_scale`. `time_scale` is a speed-up factor: 2.0 arrives twice as fast and doubles rho.
 
 `load.requests` caps the count and `load.duration_s` bounds the window; whichever cuts first
 wins, and a config that cannot deliver `requests` arrivals inside the window is an error, not
@@ -26,6 +26,7 @@ import numpy.typing as npt
 from numpy.random import Generator
 
 from llmserve.config.schema import Bursty, Constant, Load, Poisson, Replay
+from llmserve.workload.trace import is_trace, load_trace
 
 
 def _rate(arrival: Constant | Poisson, capacity_rps: float | None) -> float:
@@ -92,6 +93,8 @@ def _bursty(arrival: Bursty, rng: Generator) -> npt.NDArray[np.float64]:
 
 
 def _replay(arrival: Replay) -> npt.NDArray[np.float64]:
+    if is_trace(arrival.trace):
+        return load_trace(arrival.trace).offset_s / arrival.time_scale
     try:
         raw = np.atleast_1d(np.loadtxt(arrival.trace))
     except (OSError, ValueError) as e:
