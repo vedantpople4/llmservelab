@@ -48,6 +48,18 @@ none was used to tune WAAS. The percentile bootstrap CI (B = 10,000, seed 0) of
 - refuted iff otherwise at every such ρ the CI lower bound is > −10% of FIFO's P95;
 - inconclusive otherwise, or when a condition has fewer than 20 interactive requests;
 - not-run when no ρ ≥ 0.85 has both a WAAS and a FIFO point.
+
+**H6, KV pressure** (`kv-pressure`, plan Phase 7). Written in November 2026 after the suite
+ran, so unlike H1 to H5 it is not pre-registered. Per (KV pool, long-context share) cell, TTFT
+of the ok, in-window `interactive` requests of the WAAS and FIFO points, each pooled across
+seeds, and the percentile bootstrap CI (B = 10,000, seed 0) of `P95(WAAS) − P95(FIFO)`. The
+pool is `server.gpu_memory_utilization`; the share is long_context's fraction of class weight.
+- supported iff at every share, the CI upper bound at the smallest pool is < 0 and the relative
+  change (diff ÷ FIFO's P95) at the smallest pool is below that at the largest pool;
+- refuted iff at every share the CI lower bound at the smallest pool is > −10% of FIFO's P95
+  (WAAS gains less than 10% where the pool is tightest);
+- inconclusive otherwise, or when a cell has fewer than 20 interactive requests;
+- not-run when no share has both WAAS and FIFO at two or more pools.
 """
 
 from __future__ import annotations
@@ -60,7 +72,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from llmserve.analysis.policies import cells, matrix_requests, split_policy
+from llmserve.analysis.policies import cells, matrix_requests, measured, split_policy
 from llmserve.analysis.runs import Run
 from llmserve.analysis.stats import DiffCI, bootstrap_percentile_diff
 from llmserve.analysis.suites import SuiteRuns, sweep_table
@@ -94,6 +106,11 @@ H5_QUANTILE = 95.0
 H5_EQUIVALENCE_MARGIN = 0.10
 H5_MIN_THROUGHPUT_RATIO = 0.95
 
+H6_SUITE = "kv-pressure"
+H6_CLASS = "interactive"
+H6_QUANTILE = 95.0
+H6_EQUIVALENCE_MARGIN = 0.10
+
 STATEMENTS = {
     "H1": "Throughput saturates with concurrency, and tail TTFT degrades sharply only at or "
     "after that saturation point.",
@@ -105,6 +122,8 @@ STATEMENTS = {
     "lower P95 TTFT than FIFO.",
     "H5": "In the mixed workload at ρ ≥ 0.85 on held-out seeds, WAAS gives interactive requests "
     "lower P95 TTFT than FIFO while keeping at least 95% of FIFO's generated tok/s.",
+    "H6": "WAAS's interactive P95 TTFT gain over FIFO grows as the KV pool shrinks, at each "
+    "long-context share.",
 }
 
 
@@ -529,5 +548,101 @@ def judge_h5(samples: Mapping[float, H5Cell]) -> Verdict:
         "inconclusive",
         f"WAAS's P95 change at ρ {worst:g} is {_pct(ci.diff, ci.b)} (95% CI {ci.lo:+.2f} to "
         f"{ci.hi:+.2f} s), not a clear gain or a clear null.",
+        **evidence,
+    )
+
+
+# --- H6 ---
+
+H6Key = tuple[float, float]
+"""(KV pool as `--gpu-memory-utilization`, long-context share of class weight)."""
+
+
+def h6(suite: SuiteRuns | None) -> Verdict:
+    if suite is None or not suite.points:
+        return _verdict("H6", "not-run", f"{H6_SUITE} has no usable runs.")
+    pooled: dict[tuple[H6Key, str], list[npt.NDArray[np.float64]]] = {}
+    for cell in cells(suite):
+        name = split_policy(cell.policy)[0]
+        pool = cell.run.config.server.gpu_memory_utilization
+        if name not in ("waas", "fifo") or pool is None:
+            continue
+        frame = measured(cell.run)
+        ttft = frame.loc[frame["workload_class"] == H6_CLASS, "ttft_s"].dropna()
+        key = (pool, _long_share(cell.run))
+        pooled.setdefault((key, name), []).append(ttft.to_numpy(np.float64))
+    samples = {
+        key: (np.concatenate(pooled[(key, "waas")]), np.concatenate(pooled[(key, "fifo")]))
+        for key, name in pooled
+        if name == "waas" and (key, "fifo") in pooled
+    }
+    verdict = judge_h6(samples)
+    verdict.evidence["suite"] = suite.suite
+    return verdict
+
+
+def _long_share(run: Run) -> float:
+    classes = run.config.workload.classes
+    total = sum(c.weight for c in classes)
+    return round(sum(c.weight for c in classes if c.name == "long_context") / total, 4)
+
+
+def judge_h6(samples: Mapping[H6Key, tuple[npt.ArrayLike, npt.ArrayLike]]) -> Verdict:
+    """`samples` maps (pool, share) to (WAAS interactive TTFT, FIFO interactive TTFT)."""
+    shares: dict[float, list[float]] = {}
+    for pool, share in samples:
+        shares.setdefault(share, []).append(pool)
+    shares = {share: sorted(pools) for share, pools in shares.items() if len(pools) >= 2}
+    if not shares:
+        return _verdict("H6", "not-run", "No long-context share has WAAS and FIFO at two pools.")
+    cis: dict[H6Key, DiffCI] = {}
+    evidence: dict[str, Any] = {"per_cell": {}}
+    for key in sorted(k for k in samples if k[1] in shares):
+        waas = np.asarray(samples[key][0], dtype=np.float64)
+        fifo = np.asarray(samples[key][1], dtype=np.float64)
+        entry: dict[str, Any] = {"n_waas": len(waas), "n_fifo": len(fifo)}
+        evidence["per_cell"][key] = entry
+        if min(len(waas), len(fifo)) < H2_MIN_SAMPLES:
+            continue
+        ci = cis[key] = bootstrap_percentile_diff(waas, fifo, H6_QUANTILE)
+        entry.update(waas_s=ci.a, fifo_s=ci.b, diff_s=ci.diff, ci_lo_s=ci.lo, ci_hi_s=ci.hi)
+    short = [key for key in evidence["per_cell"] if key not in cis]
+    if short:
+        return _verdict(
+            "H6",
+            "inconclusive",
+            "Too few interactive requests at "
+            + ", ".join(f"pool {p:g}, share {s:g}" for p, s in short)
+            + f" (need {H2_MIN_SAMPLES} per policy).",
+            **evidence,
+        )
+    tight = {share: cis[(pools[0], share)] for share, pools in shares.items()}
+    loose = {share: cis[(pools[-1], share)] for share, pools in shares.items()}
+    if all(
+        tight[s].hi < 0 and tight[s].diff / tight[s].b < loose[s].diff / loose[s].b for s in shares
+    ):
+        return _verdict(
+            "H6",
+            "supported",
+            "WAAS lowers interactive P95 TTFT at the smallest pool at every share, by more than "
+            "at the largest pool.",
+            **evidence,
+        )
+    if all(ci.lo > -H6_EQUIVALENCE_MARGIN * ci.b for ci in tight.values()):
+        return _verdict(
+            "H6",
+            "refuted",
+            "At the smallest pool WAAS lowers interactive P95 TTFT by less than 10% at every "
+            "share (95% CI lower bounds).",
+            **evidence,
+        )
+    best = min(tight, key=lambda s: tight[s].diff / tight[s].b)
+    ci = tight[best]
+    return _verdict(
+        "H6",
+        "inconclusive",
+        f"At the smallest pool and share {best:g}, WAAS's P95 change is {_pct(ci.diff, ci.b)} "
+        f"(95% CI {ci.lo:+.2f} to {ci.hi:+.2f} s), not a clear gain or a clear null, or the "
+        "gain does not grow with pressure.",
         **evidence,
     )

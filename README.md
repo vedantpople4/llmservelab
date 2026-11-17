@@ -31,7 +31,7 @@ orders of magnitude, and WAAS still gains nothing.
 | H3: prefill time fits prompt length | Supported | R² 0.999 |
 | H4: shortest prompt first beats FIFO on the interactive tail at ρ ≥ 0.8 | Inconclusive | Gateway cap 16: ρ 0.8 33.3 s to 14.8 s (CI −35.6 to −4.3 s); ρ 0.95 27.1 s to 22.8 s (CI −13.1 to +1.3 s) |
 | H5: WAAS beats FIFO on interactive P95 TTFT at no throughput cost | Inconclusive | Held-out seeds, threshold server: +0.37 s at ρ 0.85, −0.49 s at ρ 0.95 (CI −4.28 to +2.13 s), throughput within 1% |
-| H6: WAAS gain grows with KV pressure and long-context share | Not supported | Shrinking the KV pool from 0.5 to 0.4 and raising the long share from 25% to 40% takes interactive P95 from 5 s to 606 s and preemptions from 0 to 250 per run, but WAAS beats FIFO in only 5 of 12 cells, with no trend |
+| H6: WAAS gain grows with KV pressure and long-context share | Inconclusive (rule written after the data) | Shrinking the KV pool from 0.5 to 0.4 and raising the long share from 25% to 40% takes interactive P95 from 5 s to 606 s and preemptions from 0 to 250 per run, but WAAS beats FIFO in only 5 of 12 cells, with no trend |
 
 Key measurements behind the short answer, interactive P95 TTFT:
 

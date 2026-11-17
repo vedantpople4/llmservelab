@@ -266,9 +266,12 @@ mix, so the 40% share is a heavier load at the same ρ.
   against 1027 and 1028, and (0.4, 40%, seed 1001) spans 770 to 866 MHz, so its tails, all above
   800 s, track the clock.
 
-There was no pre-registered rule for H6. Read against its statement (the WAAS gain over FIFO
-grows with KV pressure and long-context share), it is not supported: there is no consistent gain
-at any level to grow.
+There was no pre-registered rule for H6. The rule in `llmserve/analysis/hypotheses.py` was
+written after the suite ran, and it returns inconclusive. At the smallest pool, WAAS's P95
+change pooled over seeds is +25% at share 25% (95% CI −6.2 to +21.5 s) and +14% at share 40%
+(CI +82.8 to +178.6 s). The second CI excludes zero against WAAS, but it pools the
+clock-confounded seed 1001 cell. Neither shows a gain, so there is no gain to grow with
+pressure.
 
 ## What it means
 
