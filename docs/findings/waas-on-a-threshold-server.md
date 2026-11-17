@@ -7,7 +7,7 @@ gateway with an in-flight cap of 16.
 
 The numbers come from `llmserve report` (sections "Long-prefill threshold", "WAAS tuning" and
 the H5 verdict) over the suites `threshold-paired`, `waas-paired` and `eval-mixed`, and from
-`analysis.policies` over `xcheck-paired`, `xcheck-control`, `cap-paired` and `overload-mixed`. TTFT is the interactive class's
+`analysis.policies` over `xcheck-paired`, `xcheck-control`, `cap-paired`, `overload-mixed` and `kv-pressure`. TTFT is the interactive class's
 P95 unless stated otherwise.
 
 ## Short answer
@@ -28,6 +28,10 @@ in-flight cap of 16, not from vLLM's priority scheduling, which adds nothing ove
 Past capacity (`overload-mixed`, ρ 1.2), the one clock-matched seed shows WAAS cutting
 interactive P95 from 39 s to 24 s against gateway FIFO and no gateway, while generation-heavy
 P95 rises from 18 to 38 s to 155 s. At ρ 1.05 nothing queued at the gateway.
+
+Shrinking the KV pool (H6, `kv-pressure`) makes vLLM preempt, and the interactive tail grows by
+two orders of magnitude, but WAAS gains nothing at any pool size or long-context share. Its
+interactive P95 is below FIFO's in 5 of 12 (pool, share, seed) cells and above in 7.
 
 ## The GPU clock confound
 
@@ -211,6 +215,61 @@ With one clean seed per ρ, these are observations, not a test. They do not show
 for WAAS past capacity: its interactive gain is paid for by a generation-heavy tail four to
 nine times longer.
 
+## KV pressure, H6 (`kv-pressure`)
+
+Gateway FIFO and WAAS (cost_weight 2, max_bypass 32) at in-flight cap 32, against no gateway,
+at ρ 0.95 on a FCFS threshold-256 server. Three KV pool sizes (`--gpu-memory-utilization` 0.5,
+0.45 and 0.4) times two long-context shares (25%, the E07 mix, and 40%, taken from interactive),
+held-out seeds 1000 and 1001. The server restarts once per pool size, and each (share, seed)
+runs its three setups back to back in alternating order.
+
+The plan named 0.3, 0.4 and 0.5. vllm-metal sizes the pool as a fraction of the 19.07 GB Metal
+limit minus the model and overhead (6.51 GB), so 0.3 leaves a negative KV budget and the engine
+refuses to start. 0.4 is close to the floor: its 19.5k tokens hold two 10,240-token requests.
+
+Each cell reads FIFO / WAAS / no gateway. P95 TTFT in seconds:
+
+| Pool (KV tokens) | Long share | Seed | GPU MHz | Interactive | Generation-heavy | Preemptions | Generated tok/s |
+|---|---|---|---|---|---|---|---|
+| 0.5 (52.8k) | 25% | 1000 | 1027 to 1100 | 3.8 / 5.9 / 5.8 | 3.6 / 5.4 / 5.6 | 0 / 0 / 0 | 28.5 / 28.6 / 28.6 |
+| 0.5 (52.8k) | 25% | 1001 | 1020 to 1031 | 4.8 / 5.3 / 4.7 | 2.8 / 3.3 / 2.5 | 0 / 0 / 0 | 32.6 / 32.6 / 32.6 |
+| 0.5 (52.8k) | 40% | 1000 | 1015 to 1018 | 12.7 / 14.8 / 14.4 | 5.0 / 5.1 / 4.8 | 15 / 15 / 14 | 25.2 / 25.7 / 25.7 |
+| 0.5 (52.8k) | 40% | 1001 | 1002 to 1007 | 35.1 / 29.6 / 21.5 | 33.2 / 37.3 / 12.7 | 10 / 11 / 20 | 28.6 / 28.6 / 27.2 |
+| 0.45 (36.2k) | 25% | 1000 | 999 to 1014 | 12.8 / 10.3 / 8.4 | 7.3 / 6.3 / 7.1 | 11 / 9 / 12 | 27.5 / 27.5 / 28.1 |
+| 0.45 (36.2k) | 25% | 1001 | 1016 to 1022 | 4.7 / 5.3 / 5.0 | 2.6 / 3.2 / 2.6 | 0 / 0 / 0 | 32.6 / 31.6 / 32.6 |
+| 0.45 (36.2k) | 40% | 1000 | 978 to 986 | 147.0 / 139.5 / 158.7 | 78.5 / 401.1 / 103.7 | 155 / 194 / 170 | 15.8 / 13.7 / 15.6 |
+| 0.45 (36.2k) | 40% | 1001 | 1011 to 1019 | 37.5 / 36.8 / 34.3 | 53.9 / 34.4 / 23.6 | 41 / 28 / 25 | 27.9 / 28.5 / 29.0 |
+| 0.4 (19.5k) | 25% | 1000 | 1017 to 1023 | 23.5 / 23.9 / 23.4 | 12.3 / 14.3 / 12.9 | 41 / 38 / 33 | 25.2 / 24.3 / 25.9 |
+| 0.4 (19.5k) | 25% | 1001 | 1007 to 1033 | 28.6 / 34.0 / 48.6 | 29.7 / 39.6 / 52.0 | 32 / 57 / 62 | 31.4 / 31.2 / 30.2 |
+| 0.4 (19.5k) | 40% | 1000 | 976 to 983 | 283.8 / 270.0 / 269.8 | 208.3 / 191.2 / 192.6 | 184 / 186 / 174 | 16.9 / 18.1 / 17.9 |
+| 0.4 (19.5k) | 40% | 1001 | 770 to 866 | 927.2 / 1067.6 / 820.4 | 916.4 / 1336.2 / 825.2 | 318 / 323 / 335 | 15.8 / 11.3 / 12.8 |
+
+All requests completed in every run. ρ is against the 0.15 req/s capacity measured at the E07
+mix, so the 40% share is a heavier load at the same ρ.
+
+- **KV pressure dominates.** Averaged over setups and seeds, interactive P95 is 5.1 s at pool 0.5
+  and share 25%, 21 s at 0.5 and 40%, 92 s at 0.45 and 40%, and 606 s at 0.4 and 40%.
+  Preemptions go from 0 to 250 per run, and throughput falls from 31 to 15 generated tok/s.
+  At 0.4 and 40% the server cannot keep up, which is overload by memory rather than by rate.
+- **WAAS gains nothing at any level.** On interactive P95 it is below FIFO in 5 of 12 cells and
+  above in 7, with no trend in pool size or share. It wins by more than 2 s in four cells: 5.5 s
+  (0.5, 40%, seed 1001), 2.5 s (0.45, 25%, seed 1000), 7.5 s (0.45, 40%, seed 1000) and 13.8 s
+  (0.4, 40%, seed 1000, against a 284 s tail). In the 0.45, 40%, seed 1000 cell its
+  generation-heavy P95 is 401 s against FIFO's 79 s.
+- **The gateway queues only at the 40% share.** At 25% the cap of 32 never filled at any pool
+  size, so the gateway setups match no gateway and differences are run-to-run noise.
+- **A cap can limit preemption, sometimes.** At 0.4 and 25% on seed 1001, FIFO with cap 32
+  preempted 32 times against 62 with no gateway, and its interactive P95 was 28.6 s against
+  48.6 s. Seed 1000 in the same cell shows no difference (41 against 33 preemptions, 23.5
+  against 23.4 s).
+- **Clocks.** Every cell is within 30 MHz except two. (0.5, 25%, seed 1000) has FIFO at 1100 MHz
+  against 1027 and 1028, and (0.4, 40%, seed 1001) spans 770 to 866 MHz, so its tails, all above
+  800 s, track the clock.
+
+There was no pre-registered rule for H6. Read against its statement (the WAAS gain over FIFO
+grows with KV pressure and long-context share), it is not supported: there is no consistent gain
+at any level to grow.
+
 ## What it means
 
 The tail WAAS was designed against came mostly from long prefills inside vLLM (ADR-0014,
@@ -221,6 +280,9 @@ whose FIFO tail is long, and it costs longer worst-case waits.
 
 ## Open questions
 
+- **A KV-aware gate.** Under KV pressure the lever is preemption, not order. A gateway that holds
+  a long-context request while the KV pool is nearly full might prevent the preemption cascades
+  at 0.4 and 0.45. One seed hints that a plain cap sometimes does this.
 - **Overload with an aging bound.** A WAAS variant that bounds wait time rather than bypass
   count might keep the interactive gain at ρ 1.2 without starving generation-heavy requests.
   More matched seeds would be needed to tell.

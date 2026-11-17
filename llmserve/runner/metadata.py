@@ -140,7 +140,7 @@ def build_metadata(
         # None: docker and Kaggle deployments keep their flags outside this process.
         "vllm_launch_args": launch_args,
         "max_model_len": None,
-        "gpu_memory_utilization": None,
+        "gpu_memory_utilization": cfg.server.gpu_memory_utilization,
         "max_num_seqs": None,
         "max_num_batched_tokens": None,
         "gpu": gpu_info(),

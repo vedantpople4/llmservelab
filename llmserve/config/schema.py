@@ -209,6 +209,9 @@ class Server(_Model):
     # engine step when others are waiting or running. 0 is vLLM's default, no cap. Like
     # `scheduling_policy`, it declares how the server was started; the harness cannot set it.
     long_prefill_token_threshold: NonNegativeInt = 0
+    # vLLM's --gpu-memory-utilization, which sizes the KV pool (H6). None leaves it undeclared and
+    # unchecked; like the threshold, it declares how the server was started.
+    gpu_memory_utilization: Annotated[float, Field(gt=0, le=1)] | None = None
     api_key_env: Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")] | None = None
     """Environment variable holding the bearer token (NIM's `NVIDIA_API_KEY`); None = no auth."""
 
@@ -218,6 +221,8 @@ class Server(_Model):
             raise ValueError("scheduling_policy: priority is a vLLM feature")
         if self.long_prefill_token_threshold and self.kind not in ("vllm", "vllm-metal"):
             raise ValueError("long_prefill_token_threshold is a vLLM feature")
+        if self.gpu_memory_utilization is not None and self.kind not in ("vllm", "vllm-metal"):
+            raise ValueError("gpu_memory_utilization is a vLLM feature")
         return self
 
 
@@ -298,14 +303,17 @@ class ExperimentConfig(_Model):
     def canonical(self) -> dict[str, Any]:
         """JSON-compatible dump with every default filled in; the input to `config_hash`.
 
-        `measurement.rep_cooldown`, `server.long_prefill_token_threshold` and
-        `gateway.output_prior` appear only when set, so configs written before they existed
-        keep their hashes and suites keep skipping their finished points."""
+        `measurement.rep_cooldown`, `server.long_prefill_token_threshold`,
+        `server.gpu_memory_utilization` and `gateway.output_prior` appear only when set, so
+        configs written before they existed keep their hashes and suites keep skipping their
+        finished points."""
         dump = self.model_dump(mode="json")
         if not self.measurement.rep_cooldown:
             del dump["measurement"]["rep_cooldown"]
         if not self.server.long_prefill_token_threshold:
             del dump["server"]["long_prefill_token_threshold"]
+        if self.server.gpu_memory_utilization is None:
+            del dump["server"]["gpu_memory_utilization"]
         if self.gateway.output_prior is None:
             del dump["gateway"]["output_prior"]
         return dump

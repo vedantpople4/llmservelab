@@ -21,7 +21,8 @@ workload comes mostly from long prompts prefilling inside vLLM, not from the ord
 admitted. Setting vLLM's `--long-prefill-token-threshold 256` removes most of it. On that
 server, sending requests straight to vLLM with no gateway beats every gateway ordering tried
 below capacity, including WAAS. Past capacity (ρ 1.2), WAAS shortens the interactive tail only
-by making generation-heavy requests wait far longer.
+by making generation-heavy requests wait far longer. Under KV pressure the tail grows by two
+orders of magnitude, and WAAS still gains nothing.
 
 | Hypothesis | Verdict | Evidence |
 |---|---|---|
@@ -30,7 +31,7 @@ by making generation-heavy requests wait far longer.
 | H3: prefill time fits prompt length | Supported | R² 0.999 |
 | H4: shortest prompt first beats FIFO on the interactive tail at ρ ≥ 0.8 | Inconclusive | Gateway cap 16: ρ 0.8 33.3 s to 14.8 s (CI −35.6 to −4.3 s); ρ 0.95 27.1 s to 22.8 s (CI −13.1 to +1.3 s) |
 | H5: WAAS beats FIFO on interactive P95 TTFT at no throughput cost | Inconclusive | Held-out seeds, threshold server: +0.37 s at ρ 0.85, −0.49 s at ρ 0.95 (CI −4.28 to +2.13 s), throughput within 1% |
-| H6: WAAS gain against KV capacity and long-context share | Running | 36-point `kv-pressure` suite, results expected 17 November 2026 |
+| H6: WAAS gain grows with KV pressure and long-context share | Not supported | Shrinking the KV pool from 0.5 to 0.4 and raising the long share from 25% to 40% takes interactive P95 from 5 s to 606 s and preemptions from 0 to 250 per run, but WAAS beats FIFO in only 5 of 12 cells, with no trend |
 
 Key measurements behind the short answer, interactive P95 TTFT:
 
@@ -44,6 +45,9 @@ Key measurements behind the short answer, interactive P95 TTFT:
 - **Overload** (ρ 1.2, one clock-matched seed): WAAS 23.5 s against 39.4 s for FIFO and 38.7 s
   with no gateway, at equal throughput. Its generation-heavy P95 rose to 155 s, against 38 s
   and 18 s.
+- **KV pressure** (ρ 0.95, H6): shrinking the KV pool to 19.5k tokens with 40% long-context
+  requests drives 250 preemptions per run and an interactive P95 above 4 minutes under every
+  setup. WAAS is below FIFO in 5 of 12 cells, above in 7.
 - **GPU clock confound.** The fanless Air's sustained GPU clock varies about 830 to 1170 MHz between
   runs, which alone moves interactive P95 several-fold at high load. Comparisons above pair runs
   back to back and report clocks.
@@ -72,8 +76,8 @@ Key measurements behind the short answer, interactive P95 TTFT:
   ([ADR-0014](docs/adr/0014-waas-design-from-phase-5.md)), output estimators, the server
   threshold sweep, tuning (cost_weight 2, max_bypass 32) and the held-out H5 evaluation.
 - **Phase 7 (evaluation):** in progress. Done: the gateway against no-gateway cross-check, the
-  in-flight cap sweep, the overload suite and the regression baseline. Running: H6
-  (`kv-pressure`). Left: resizing the `paper_01` matrix and one public trace replay.
+  in-flight cap sweep, the overload suite, the regression baseline and H6 (`kv-pressure`).
+  Left: resizing the `paper_01` matrix and one public trace replay.
 - **Phase 8 (report and release):** not started.
 
 Measurement platform: an M5 MacBook Air running vLLM 0.31.0 through vllm-metal, serving
