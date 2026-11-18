@@ -22,11 +22,13 @@ from llmserve.analysis.hypotheses import (
     h4,
     h5,
     h5_pair,
+    h6,
     judge_h1,
     judge_h2,
     judge_h3,
     judge_h4,
     judge_h5,
+    judge_h6,
     prefill_points,
 )
 from llmserve.analysis.suites import SuiteRuns, load_suite_runs
@@ -273,3 +275,56 @@ def test_h5_pairs_waas_and_fifo_whatever_the_params_at_one_threshold() -> None:
         h5_pair([tuned, "fifo"])
     with pytest.raises(ValueError, match="one WAAS and one FIFO"):
         h5_pair([tuned, "waas@lpt256", "fifo@lpt256"])
+
+
+# --- H6 ---
+
+
+def test_h6_supported_when_the_gain_grows_as_the_pool_shrinks() -> None:
+    rng = np.random.default_rng(4)
+    fifo = rng.normal(10.0, 1.0, 400)
+    v = judge_h6(
+        {
+            (0.5, 0.25): (rng.normal(9.5, 1.0, 400), fifo),
+            (0.4, 0.25): (rng.normal(5.0, 0.5, 400), fifo),
+            (0.5, 0.4): (rng.normal(9.0, 1.0, 400), fifo),
+            (0.4, 0.4): (rng.normal(4.0, 0.5, 400), fifo),
+        }
+    )
+    assert v.status == "supported"
+    assert v.evidence["per_cell"][(0.4, 0.25)]["diff_s"] < -4
+
+
+def test_h6_needs_the_gain_to_grow_not_just_exist() -> None:
+    rng = np.random.default_rng(5)
+    fifo = rng.normal(10.0, 1.0, 400)
+    v = judge_h6(
+        {
+            (0.5, 0.25): (rng.normal(4.0, 0.5, 400), fifo),
+            (0.4, 0.25): (rng.normal(5.0, 0.5, 400), fifo),
+        }
+    )
+    assert v.status == "inconclusive"
+
+
+def test_h6_refuted_when_the_tightest_pool_gains_under_ten_percent() -> None:
+    rng = np.random.default_rng(6)
+    same = rng.normal(10, 0.3, 3000)
+    v = judge_h6({(0.5, 0.25): (rng.normal(5, 0.3, 3000), same), (0.4, 0.25): (same, same)})
+    assert v.status == "refuted" and "less than 10%" in v.summary
+
+
+def test_h6_not_run_without_two_pools_and_inconclusive_when_short() -> None:
+    rng = np.random.default_rng(7)
+    assert (
+        judge_h6({(0.5, 0.25): (rng.normal(5, 1, 100), rng.normal(5, 1, 100))}).status == "not-run"
+    )
+    v = judge_h6(
+        {
+            (0.5, 0.25): (np.full(19, 1.0), np.full(100, 5.0)),
+            (0.4, 0.25): (np.full(50, 1.0), np.full(50, 5.0)),
+        }
+    )
+    assert v.status == "inconclusive" and "Too few" in v.summary
+    assert h6(None).status == "not-run"
+    assert h6(SuiteRuns("kv-pressure", "f.yaml", "x", ())).status == "not-run"

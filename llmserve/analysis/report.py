@@ -36,12 +36,14 @@ from llmserve.analysis.capacity import Capacity, capacity_points, find_capacity
 from llmserve.analysis.hypotheses import (
     H2_CLASS,
     H5_SUITE,
+    H6_SUITE,
     Verdict,
     h1,
     h2,
     h3,
     h4,
     h5,
+    h6,
     interactive_ttft,
     prefill_fit,
     prefill_points,
@@ -222,6 +224,7 @@ def build_report(results_root: Path, out_dir: Path, *, dev: bool = False) -> Pat
         h3(prompt),
         h4(r.suite(("matrix-mixed",))),
         h5(r.suite((H5_SUITE,))),
+        h6(r.suite((H6_SUITE,))),
     ]
     model = _cost_model(prefill_fit(verdicts[2]), concurrency)
     body = [
