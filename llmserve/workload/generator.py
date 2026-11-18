@@ -20,11 +20,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from numpy.random import Generator, SeedSequence, default_rng
 
-from llmserve.config.schema import ExperimentConfig
+from llmserve.config.schema import ExperimentConfig, TraceMatch
 from llmserve.workload.arrivals import generate_arrivals
 from llmserve.workload.distributions import sample
 from llmserve.workload.prompts import PromptBuilder
 from llmserve.workload.spec import PRIORITY_BY_NAME, RequestSpec, Workload
+from llmserve.workload.trace import load_trace
 
 _COLUMNS = (
     "request_id",
@@ -75,15 +76,22 @@ def materialize(
         offsets = generate_arrivals(cfg.load, rng_arrivals)
 
     classes = cfg.workload.classes
-    weights = np.array([c.weight for c in classes], dtype=np.float64)
-    weights /= weights.sum()
-    picks = rng_classes.choice(len(classes), size=len(offsets), p=weights)
+    trace = load_trace(cfg.workload.trace) if cfg.workload.trace is not None else None
+    if trace is None:
+        weights = np.array([c.weight for c in classes], dtype=np.float64)
+        weights /= weights.sum()
+        picks = rng_classes.choice(len(classes), size=len(offsets), p=weights)
 
     specs: Workload = []
-    for i, pick in enumerate(picks):
-        cls = classes[int(pick)]
-        prompt_tokens = int(sample(cls.prompt, rng_prompt_len, 1)[0])
-        output_tokens = int(sample(cls.output, rng_output_len, 1)[0])
+    for i in range(len(offsets)):
+        if trace is None:
+            cls = classes[int(picks[i])]
+            prompt_tokens = int(sample(cls.prompt, rng_prompt_len, 1)[0])
+            output_tokens = int(sample(cls.output, rng_output_len, 1)[0])
+        else:
+            prompt_tokens = int(trace.prompt_tokens[i])
+            output_tokens = int(trace.output_tokens[i])
+            cls = next(c for c in classes if _matches(c.match, prompt_tokens, output_tokens))
         ids = builder.build(prompt_tokens, rng_prompts)
         specs.append(
             RequestSpec(
@@ -99,6 +107,14 @@ def materialize(
             )
         )
     return specs
+
+
+def _matches(match: TraceMatch | None, prompt_tokens: int, output_tokens: int) -> bool:
+    if match is None:
+        return True
+    return (match.prompt_min is None or prompt_tokens >= match.prompt_min) and (
+        match.output_min is None or output_tokens >= match.output_min
+    )
 
 
 def save_workload(workload: Workload, path: str | Path) -> None:
