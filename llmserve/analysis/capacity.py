@@ -38,7 +38,9 @@ import numpy.typing as npt
 
 from llmserve.analysis.runs import Run
 from llmserve.analysis.suites import SuiteRuns
+from llmserve.config.schema import Replay
 from llmserve.scheduler.estimators import PrefillFit
+from llmserve.workload.arrivals import replay_rate
 
 MIN_COMPLETION_RATIO = 0.95
 MAX_TTFT_GROWTH = 2.0
@@ -125,12 +127,15 @@ def find_capacity(points: Sequence[RatePoint]) -> Capacity:
 
 
 def capacity_points(suite: SuiteRuns, prefill: PrefillFit | None) -> list[RatePoint]:
-    """One `RatePoint` per suite point; the axis value is the offered rate. `prefill` is the H3
-    fit that predicts unloaded TTFT for slowdown; None falls back to raw TTFT growth."""
+    """One `RatePoint` per suite point; the axis value is the offered rate, which a replay sweep
+    (over `time_scale`) reads from its trace. `prefill` is the H3 fit that predicts unloaded TTFT
+    for slowdown; None falls back to raw TTFT growth."""
     out = []
     for point in suite.points:
         if point.value is None:
             continue
+        arrival = point.run.config.load.arrival
+        offered = replay_rate(arrival) if isinstance(arrival, Replay) else point.value
         achieved = point.run.rep_metric("throughput.req_s")
         arrived = [
             s["n_measured"] / s["window"]["length_s"]
@@ -142,7 +147,7 @@ def capacity_points(suite: SuiteRuns, prefill: PrefillFit | None) -> list[RatePo
         out.append(
             RatePoint(
                 label=point.label,
-                offered_rps=point.value,
+                offered_rps=offered,
                 arrived_rps=float(np.mean(arrived)) if arrived else 0.0,
                 achieved_rps=float(np.mean(achieved)) if achieved else 0.0,
                 ttft_growth=_mean_growth(growth),

@@ -1,0 +1,44 @@
+# Capacity search for the Azure conv trace mix (Phase 7 trace replay); defines rho = 1 for the
+# trace-replay points.
+suite: capacity-azure-conv
+description: >-
+  Capacity search for the steady window of the Azure LLM inference trace 2023 (conversation,
+  configs/traces/) on the threshold-256 server. The window's 150 requests arrive at 4.36 req/s
+  raw; time_scale slows them to 0.05, 0.1, 0.15, 0.2 and 0.25 req/s, and the capacity analysis
+  reads that offered rate from the trace. 600 s (warm-up 60 s, cool-down 30 s trimmed) holds 30
+  to 150 arrivals. One repetition: this locates the knee, it is not a measurement.
+base: ../baseline/e07.yaml
+set:
+  repetitions: 1
+  server.long_prefill_token_threshold: 256
+  server.gpu_memory_utilization: 0.5
+  load:
+    mode: open
+    arrival: {process: replay, trace: configs/traces/azure-conv-2023-steady.csv}
+    duration_s: 600
+  measurement.warmup_s: 60
+  measurement.cooldown_s: 30
+  workload:
+    trace: configs/traces/azure-conv-2023-steady.csv
+    classes:
+      - name: long_context  # thresholds as in scripts/azure_trace.py
+        priority: medium
+        slo: {ttft_ms: 9000, tpot_ms: 200}
+        match: {prompt_min: 2048}
+        prompt: {distribution: fixed, tokens: 2048}
+        output: {distribution: fixed, tokens: 128}
+      - name: generation_heavy
+        priority: low
+        slo: {ttft_ms: 6000, tpot_ms: 300}
+        match: {output_min: 256}
+        prompt: {distribution: fixed, tokens: 256}
+        output: {distribution: fixed, tokens: 512}
+      - name: interactive
+        priority: high
+        slo: {ttft_ms: 1500, tpot_ms: 200}
+        prompt: {distribution: uniform, min: 128, max: 512}
+        output: {distribution: fixed, tokens: 128}
+sweep:
+  field: load.arrival.time_scale
+  values: [0.011458, 0.022917, 0.034375, 0.045833, 0.057292]
+  label: "t{value:.4f}"

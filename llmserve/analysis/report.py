@@ -78,6 +78,8 @@ CAPACITY = (
     ("mixed", "capacity-mixed"),
     ("interactive", "capacity-interactive"),
     ("long-context-heavy", "capacity-long-context-heavy"),
+    ("generation-heavy", "capacity-generation-heavy"),
+    ("azure-conv trace", "capacity-azure-conv"),
 )
 BURSTY = ("bursty",)
 PROFILE_P128 = ("profile-p128",)

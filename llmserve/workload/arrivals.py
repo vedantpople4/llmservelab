@@ -109,6 +109,12 @@ def _replay(arrival: Replay) -> npt.NDArray[np.float64]:
     return offsets / arrival.time_scale
 
 
+def replay_rate(arrival: Replay) -> float:
+    """A replay's offered rate in req/s: its request count over its scaled span."""
+    offsets = _replay(arrival)
+    return float(len(offsets) / offsets[-1]) if offsets[-1] > 0 else float("inf")
+
+
 def generate_arrivals(load: Load, rng: Generator) -> npt.NDArray[np.float64]:
     """Arrival offsets (seconds, non-decreasing) for an open-loop `load`.
 

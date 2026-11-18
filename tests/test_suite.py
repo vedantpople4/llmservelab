@@ -63,6 +63,8 @@ CONTRACT_SUITES = {
     "cap-paired",
     "overload-mixed",
     "kv-pressure",
+    "capacity-generation-heavy",
+    "capacity-azure-conv",
     "dev-concurrency",
     "dev-prompt-length",
 }

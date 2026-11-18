@@ -5,8 +5,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from llmserve.config.schema import Load
-from llmserve.workload.arrivals import generate_arrivals
+from llmserve.config.schema import Load, Replay
+from llmserve.workload.arrivals import generate_arrivals, replay_rate
 
 
 def open_load(**kw: object) -> Load:
@@ -141,3 +141,10 @@ def test_same_seed_same_arrivals() -> None:
     c = generate_arrivals(load, np.random.default_rng(8))
     assert np.array_equal(a, b)
     assert not np.array_equal(a, c)
+
+
+def test_replay_rate_is_requests_over_the_scaled_span(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.csv"
+    trace.write_text("offset_s,prompt_tokens,output_tokens\n0,1,1\n1,1,1\n2,1,1\n4,1,1\n")
+    arrival = Replay(process="replay", trace=str(trace), time_scale=0.5)
+    assert replay_rate(arrival) == pytest.approx(4 / 8)
